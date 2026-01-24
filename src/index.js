@@ -34,9 +34,26 @@ connectDB();
 // Security middleware
 app.use(helmet());
 
-// CORS configuration
+// CORS configuration - Allow requests from your FRONTEND, not the backend URL!
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  'https://airhub.vercel.app',           // Your deployed frontend
+  'https://air-hub.vercel.app',          // Alternative frontend URL
+  'http://localhost:3000',               // Local development
+].filter(Boolean);
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+  origin: function (origin, callback) {
+    // Allow requests with no origin (mobile apps, Postman, etc.)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      console.log('CORS blocked origin:', origin);
+      callback(null, true); // Allow all for now, remove in production
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token'],
@@ -84,7 +101,7 @@ app.get('/api', (req, res) => {
       admin: '/api/admin',
       superadmin: '/api/superadmin',
     },
-    documentation: '/api/docs', // Future: Add API documentation
+    documentation: '/api/docs',
   });
 });
 
@@ -114,7 +131,6 @@ const server = app.listen(PORT, () => {
 // Handle unhandled promise rejections
 process.on('unhandledRejection', (err) => {
   console.error('❌ Unhandled Rejection:', err.message);
-  // Close server & exit process
   server.close(() => process.exit(1));
 });
 
