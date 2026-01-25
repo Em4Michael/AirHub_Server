@@ -37,9 +37,10 @@ app.use(helmet());
 // CORS configuration - Allow requests from your FRONTEND, not the backend URL!
 const allowedOrigins = [
   process.env.FRONTEND_URL,
-  'https://airhub.vercel.app',           // Your deployed frontend
-  'https://air-hub.vercel.app',          // Alternative frontend URL
-  'http://localhost:3000',               // Local development
+  'https://airhub.vercel.app',           
+  'https://air-hub.vercel.app',          
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',               
 ].filter(Boolean);
 
 app.use(cors({
