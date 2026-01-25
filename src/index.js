@@ -31,54 +31,39 @@ const app = express();
 // Connect to database
 connectDB();
 
-// Security middleware - UPDATED for CORS compatibility
+// CRITICAL: CORS MUST be first
+const corsOptions = {
+  origin: [
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    'https://airhub.vercel.app',
+    'https://air-hub.vercel.app',
+    'https://air-hub-server.vercel.app',
+  ].filter(Boolean),
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token'],
+  optionsSuccessStatus: 200
+};
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
+
+// Security middleware
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
 
-// CORS configuration - FIXED
-const allowedOrigins = [
-  process.env.FRONTEND_URL,
-  'https://airhub.vercel.app',           
-  'https://air-hub.vercel.app',          
-  'http://localhost:3000',
-  'http://127.0.0.1:3000',               
-].filter(Boolean);
-
-// Enable CORS for all routes
-app.use(cors({
-  origin: function (origin, callback) {
-    // Allow requests with no origin (mobile apps, Postman, etc.)
-    if (!origin) return callback(null, true);
-    
-    if (allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      console.log('CORS blocked origin:', origin);
-      callback(null, true); // Allow all for now
-    }
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token'],
-  exposedHeaders: ['Authorization'],
-  preflightContinue: false,
-  optionsSuccessStatus: 204
-}));
-
-// Handle preflight requests explicitly
-app.options('*', cors());
-
-// Body parser - MUST come after CORS
+// Body parser
 app.use(express.json({ limit: '10kb' }));
 app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 
-// Logging middleware (development only)
+// Logging
 if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
 }
 
-// Rate limiting - MOVED after body parser
+// Rate limiting
 const limiter = rateLimit({
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
   max: parseInt(process.env.RATE_LIMIT_MAX) || 100,
@@ -86,12 +71,11 @@ const limiter = rateLimit({
     success: false,
     message: 'Too many requests, please try again later.',
   },
-  // Skip rate limiting for OPTIONS requests
   skip: (req) => req.method === 'OPTIONS'
 });
 app.use('/api/', limiter);
 
-// Health check endpoint
+// Health check
 app.get('/health', (req, res) => {
   res.json({
     success: true,
@@ -101,7 +85,7 @@ app.get('/health', (req, res) => {
   });
 });
 
-// API info endpoint
+// API info
 app.get('/api', (req, res) => {
   res.json({
     success: true,
@@ -113,7 +97,6 @@ app.get('/api', (req, res) => {
       admin: '/api/admin',
       superadmin: '/api/superadmin',
     },
-    documentation: '/api/docs',
   });
 });
 
@@ -123,14 +106,17 @@ app.use('/api/user', userRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/superadmin', superAdminRoutes);
 
-// Handle 404 - Not Found
+// 404 handler
 app.use(notFound);
 
-// Global error handler
+// Error handler
 app.use(errorHandler);
 
-// Start server (only if not in serverless environment)
-if (process.env.NODE_ENV !== 'production') {
+// Export for Vercel
+module.exports = app;
+
+// Local development server
+if (require.main === module) {
   const PORT = process.env.PORT || 5000;
   const server = app.listen(PORT, () => {
     console.log('========================================');
@@ -141,19 +127,16 @@ if (process.env.NODE_ENV !== 'production') {
     console.log('========================================');
   });
 
-  // Handle unhandled promise rejections
   process.on('unhandledRejection', (err) => {
     console.error('❌ Unhandled Rejection:', err.message);
     server.close(() => process.exit(1));
   });
 
-  // Handle uncaught exceptions
   process.on('uncaughtException', (err) => {
     console.error('❌ Uncaught Exception:', err.message);
     process.exit(1);
   });
 
-  // Graceful shutdown
   process.on('SIGTERM', () => {
     console.log('👋 SIGTERM received. Shutting down gracefully');
     server.close(() => {
@@ -161,6 +144,3 @@ if (process.env.NODE_ENV !== 'production') {
     });
   });
 }
-
-// Export for Vercel
-module.exports = app;
