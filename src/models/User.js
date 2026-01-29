@@ -38,6 +38,12 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    // Profile photo - stores base64 encoded image or URL
+    profilePhoto: {
+      type: String,
+      default: null,
+      select: true, // Include in queries
+    },
     // Bank details for payments
     bankDetails: {
       bankName: {

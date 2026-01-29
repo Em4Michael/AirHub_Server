@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const {
   updateBankDetails,
+  updateProfilePhoto,
+  deleteProfilePhoto,
   getAssignedProfiles,
   createEntry,
   updateEntry,
@@ -12,6 +14,7 @@ const {
 const { protect, authorize } = require('../middleware/auth');
 const {
   updateBankDetailsValidation,
+  updateProfilePhotoValidation,
   createEntryValidation,
   updateEntryValidation,
   mongoIdParam,
@@ -24,6 +27,10 @@ router.use(protect);
 
 // Bank details
 router.put('/bank', updateBankDetailsValidation, updateBankDetails);
+
+// Profile photo
+router.put('/profile-photo', updateProfilePhotoValidation, updateProfilePhoto);
+router.delete('/profile-photo', deleteProfilePhoto);
 
 // Profiles
 router.get('/profiles', getAssignedProfiles);

@@ -105,6 +105,20 @@ const updatePasswordValidation = [
 ];
 
 /**
+ * Profile photo validation
+ */
+const updateProfilePhotoValidation = [
+  body('profilePhoto')
+    .notEmpty()
+    .withMessage('Profile photo is required')
+    .isString()
+    .withMessage('Profile photo must be a string')
+    .matches(/^data:image\/(png|jpg|jpeg|gif|webp);base64,/)
+    .withMessage('Invalid image format. Must be a base64-encoded PNG, JPG, JPEG, GIF, or WebP'),
+  handleValidationErrors,
+];
+
+/**
  * Profile validations
  */
 const createProfileValidation = [
@@ -370,6 +384,7 @@ module.exports = {
   forgotPasswordValidation,
   resetPasswordValidation,
   updatePasswordValidation,
+  updateProfilePhotoValidation,
   createProfileValidation,
   updateProfileValidation,
   createEntryValidation,

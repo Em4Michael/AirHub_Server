@@ -29,8 +29,8 @@ const protect = async (req, res, next) => {
     // Verify token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    // Get user from token
-    const user = await User.findById(decoded.id);
+    // Get user from token (include profilePhoto)
+    const user = await User.findById(decoded.id).select('+profilePhoto');
 
     if (!user) {
       return res.status(401).json({
@@ -160,7 +160,7 @@ const optionalAuth = async (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.id);
+    const user = await User.findById(decoded.id).select('+profilePhoto');
     if (user && user.isApproved && user.isActive) {
       req.user = user;
     }

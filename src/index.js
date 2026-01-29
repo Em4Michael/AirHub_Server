@@ -11,7 +11,7 @@ const rateLimit = require('express-rate-limit');
 const dotenv = require('dotenv');
 
 // Load environment variables
-dotenv.config(); 
+dotenv.config();
 
 // Import database connection
 const connectDB = require('./config/db');
@@ -21,6 +21,7 @@ const authRoutes = require('./routes/authRoutes');
 const userRoutes = require('./routes/userRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const superAdminRoutes = require('./routes/superAdminRoutes');
+const paymentRoutes = require('./routes/paymentRoutes');
 
 // Import error handlers
 const { errorHandler, notFound } = require('./middleware/errorHandler');
@@ -31,61 +32,50 @@ const app = express();
 // Connect to database
 connectDB();
 
-// CRITICAL: CORS MUST be first
-const corsOptions = {
-  origin: [
-    'http://localhost:3000',
-    'http://127.0.0.1:3000',
-    'https://airhub.vercel.app',
-    'https://air-hub.vercel.app',
-    'https://air-hub-server.vercel.app',
-  ].filter(Boolean),
+// CORS configuration
+app.use(cors({
+  origin: ['http://localhost:3000', 'http://127.0.0.1:3000'],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token'],
-  optionsSuccessStatus: 200
-};
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token']
+}));
 
-app.use(cors(corsOptions));
-app.options('*', cors(corsOptions));
-
-// Security middleware
+// Security headers
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
 
-// Body parser
-app.use(express.json({ limit: '10kb' }));
-app.use(express.urlencoded({ extended: true, limit: '10kb' }));
+// Body parser with INCREASED size limit for profile photos (base64 images)
+// Base64 encoding increases file size by ~33%, so 5MB image becomes ~6.7MB
+// Setting limit to 10MB to be safe
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Logging
-if (process.env.NODE_ENV === 'development') {
-  app.use(morgan('dev'));
-}
+// Request logging
+app.use(morgan('dev'));
 
-// Rate limiting
+// Rate limiting on API routes
 const limiter = rateLimit({
-  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
-  max: parseInt(process.env.RATE_LIMIT_MAX) || 100,
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 100,
   message: {
     success: false,
-    message: 'Too many requests, please try again later.',
-  },
-  skip: (req) => req.method === 'OPTIONS'
+    message: 'Too many requests, please try again later.'
+  }
 });
 app.use('/api/', limiter);
 
-// Health check
+// ────────────────────────────────────────────────
+// Health & info endpoints
+// ────────────────────────────────────────────────
 app.get('/health', (req, res) => {
   res.json({
     success: true,
     message: 'AIRhub API is running',
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development',
+    timestamp: new Date().toISOString()
   });
 });
 
-// API info
 app.get('/api', (req, res) => {
   res.json({
     success: true,
@@ -95,52 +85,52 @@ app.get('/api', (req, res) => {
       auth: '/api/auth',
       user: '/api/user',
       admin: '/api/admin',
-      superadmin: '/api/superadmin',
-    },
+      payments: '/api/payments',
+      superadmin: '/api/superadmin'
+    }
   });
 });
 
+// ────────────────────────────────────────────────
 // Mount routes
+// ────────────────────────────────────────────────
 app.use('/api/auth', authRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/payments', paymentRoutes);
 app.use('/api/superadmin', superAdminRoutes);
 
 // 404 handler
 app.use(notFound);
 
-// Error handler
+// Global error handler
 app.use(errorHandler);
 
-// Export for Vercel
-module.exports = app;
+// Start server
+const PORT = process.env.PORT || 5000;
+const server = app.listen(PORT, () => {
+  console.log('========================================');
+  console.log(`🚀 AIRhub Server Started`);
+  console.log(`📡 Port: ${PORT}`);
+  console.log(`🌍 Running locally`);
+  console.log(`📅 Started at: ${new Date().toISOString()}`);
+  console.log('========================================');
+});
 
-// Local development server
-if (require.main === module) {
-  const PORT = process.env.PORT || 5000;
-  const server = app.listen(PORT, () => {
-    console.log('========================================');
-    console.log(`🚀 AIRhub Server Started`);
-    console.log(`📡 Port: ${PORT}`);
-    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`📅 Started at: ${new Date().toISOString()}`);
-    console.log('========================================');
-  });
+// Graceful shutdown & error handling
+process.on('unhandledRejection', (err) => {
+  console.error('❌ Unhandled Rejection:', err.message);
+  server.close(() => process.exit(1));
+});
 
-  process.on('unhandledRejection', (err) => {
-    console.error('❌ Unhandled Rejection:', err.message);
-    server.close(() => process.exit(1));
-  });
+process.on('uncaughtException', (err) => {
+  console.error('❌ Uncaught Exception:', err.message);
+  process.exit(1);
+});
 
-  process.on('uncaughtException', (err) => {
-    console.error('❌ Uncaught Exception:', err.message);
-    process.exit(1);
+process.on('SIGTERM', () => {
+  console.log('👋 SIGTERM received. Shutting down gracefully');
+  server.close(() => {
+    console.log('💤 Process terminated');
   });
-
-  process.on('SIGTERM', () => {
-    console.log('👋 SIGTERM received. Shutting down gracefully');
-    server.close(() => {
-      console.log('💤 Process terminated');
-    });
-  });
-}
+});

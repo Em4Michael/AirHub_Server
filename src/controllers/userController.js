@@ -28,7 +28,68 @@ const updateBankDetails = asyncHandler(async (req, res) => {
   res.json({
     success: true,
     message: 'Bank details updated successfully',
-    data: { bankDetails: user.bankDetails },
+    data: user,
+  });
+});
+
+/**
+ * @desc    Upload or update profile photo
+ * @route   PUT /api/user/profile-photo
+ * @access  Private (User)
+ */
+const updateProfilePhoto = asyncHandler(async (req, res) => {
+  const { profilePhoto } = req.body;
+
+  if (!profilePhoto) {
+    throw new ApiError('Profile photo is required', 400);
+  }
+
+  // Validate base64 image format
+  const base64Regex = /^data:image\/(png|jpg|jpeg|gif|webp);base64,/;
+  if (!base64Regex.test(profilePhoto)) {
+    throw new ApiError('Invalid image format. Please upload a valid image (PNG, JPG, JPEG, GIF, or WebP)', 400);
+  }
+
+  // Check file size (limit to 5MB)
+  const sizeInBytes = (profilePhoto.length * 3) / 4;
+  const maxSize = 5 * 1024 * 1024; // 5MB
+  if (sizeInBytes > maxSize) {
+    throw new ApiError('Image size too large. Maximum size is 5MB', 400);
+  }
+
+  const user = await User.findByIdAndUpdate(
+    req.user._id,
+    { profilePhoto },
+    { new: true, runValidators: true }
+  );
+
+  res.json({
+    success: true,
+    message: 'Profile photo updated successfully',
+    data: {
+      profilePhoto: user.profilePhoto,
+    },
+  });
+});
+
+/**
+ * @desc    Delete profile photo
+ * @route   DELETE /api/user/profile-photo
+ * @access  Private (User)
+ */
+const deleteProfilePhoto = asyncHandler(async (req, res) => {
+  const user = await User.findByIdAndUpdate(
+    req.user._id,
+    { profilePhoto: null },
+    { new: true, runValidators: true }
+  );
+
+  res.json({
+    success: true,
+    message: 'Profile photo deleted successfully',
+    data: {
+      profilePhoto: null,
+    },
   });
 });
 
@@ -381,6 +442,8 @@ const getWeeklySummary = asyncHandler(async (req, res) => {
 
 module.exports = {
   updateBankDetails,
+  updateProfilePhoto,
+  deleteProfilePhoto,
   getAssignedProfiles,
   createEntry,
   updateEntry,

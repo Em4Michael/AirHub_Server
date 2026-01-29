@@ -281,3 +281,4 @@ const seedData = async () => {
 
 // Run seeder
 connectDB().then(seedData);
+ 
