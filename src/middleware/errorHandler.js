@@ -5,7 +5,7 @@ class ApiError extends Error {
   constructor(message, statusCode, errors = null) {
     super(message);
     this.statusCode = statusCode;
-    this.status = `${statusCode}`.startsWith('4') ? 'fail' : 'error';
+    this.status = `${statusCode}`.startsWith("4") ? "fail" : "error";
     this.isOperational = true;
     this.errors = errors;
 
@@ -45,7 +45,7 @@ const handleValidationErrorDB = (err) => {
     field: el.path,
     message: el.message,
   }));
-  const message = 'Validation failed';
+  const message = "Validation failed";
   return new ApiError(message, 400, errors);
 };
 
@@ -53,13 +53,13 @@ const handleValidationErrorDB = (err) => {
  * Handle JWT error
  */
 const handleJWTError = () =>
-  new ApiError('Invalid token. Please log in again.', 401);
+  new ApiError("Invalid token. Please log in again.", 401);
 
 /**
  * Handle JWT expired error
  */
 const handleJWTExpiredError = () =>
-  new ApiError('Your token has expired. Please log in again.', 401);
+  new ApiError("Your token has expired. Please log in again.", 401);
 
 /**
  * Send error response in development
@@ -89,12 +89,12 @@ const sendErrorProd = (err, res) => {
     });
   } else {
     // Programming or other unknown error: don't leak error details
-    console.error('ERROR 💥', err);
+    console.error("ERROR 💥", err);
 
     res.status(500).json({
       success: false,
-      status: 'error',
-      message: 'Something went wrong!',
+      status: "error",
+      message: "Something went wrong!",
     });
   }
 };
@@ -104,19 +104,19 @@ const sendErrorProd = (err, res) => {
  */
 const errorHandler = (err, req, res, next) => {
   err.statusCode = err.statusCode || 500;
-  err.status = err.status || 'error';
+  err.status = err.status || "error";
 
-  if (process.env.NODE_ENV === 'development') {
+  if (process.env.NODE_ENV === "development") {
     sendErrorDev(err, res);
   } else {
     let error = { ...err };
     error.message = err.message;
 
-    if (err.name === 'CastError') error = handleCastErrorDB(err);
+    if (err.name === "CastError") error = handleCastErrorDB(err);
     if (err.code === 11000) error = handleDuplicateFieldsDB(err);
-    if (err.name === 'ValidationError') error = handleValidationErrorDB(err);
-    if (err.name === 'JsonWebTokenError') error = handleJWTError();
-    if (err.name === 'TokenExpiredError') error = handleJWTExpiredError();
+    if (err.name === "ValidationError") error = handleValidationErrorDB(err);
+    if (err.name === "JsonWebTokenError") error = handleJWTError();
+    if (err.name === "TokenExpiredError") error = handleJWTExpiredError();
 
     sendErrorProd(error, res);
   }

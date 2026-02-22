@@ -2,15 +2,33 @@ const User = require('../models/User');
 const Profile = require('../models/Profile');
 const Entry = require('../models/Entry');
 const Benchmark = require('../models/Benchmark');
+const WeeklyPayment = require('../models/Payment'); // file is Payment.js
 const { asyncHandler, ApiError } = require('../middleware/errorHandler');
 
-/**
- * @desc    Update bank details
- * @route   PUT /api/user/bank
- * @access  Private (User)
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// Update Profile (phone, name, etc.)
+// ─────────────────────────────────────────────────────────────────────────────
+const updateProfile = asyncHandler(async (req, res) => {
+  const { phone, name } = req.body;
+
+  const updateFields = {};
+  if (phone !== undefined) updateFields.phone = phone;
+  if (name !== undefined) updateFields.name = name;
+
+  const user = await User.findByIdAndUpdate(
+    req.user._id,
+    updateFields,
+    { new: true, runValidators: true }
+  ).select('-password');
+
+  res.json({ success: true, message: 'Profile updated successfully', data: user });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Bank details
+// ─────────────────────────────────────────────────────────────────────────────
 const updateBankDetails = asyncHandler(async (req, res) => {
-  const { bankName, accountNumber, accountName, routingNumber } = req.body;
+  const { bankName, accountNumber, accountName } = req.body;
 
   const user = await User.findByIdAndUpdate(
     req.user._id,
@@ -19,92 +37,57 @@ const updateBankDetails = asyncHandler(async (req, res) => {
         bankName: bankName || '',
         accountNumber: accountNumber || '',
         accountName: accountName || '',
-        routingNumber: routingNumber || '',
       },
     },
     { new: true, runValidators: true }
   );
 
-  res.json({
-    success: true,
-    message: 'Bank details updated successfully',
-    data: user,
-  });
+  res.json({ success: true, message: 'Bank details updated successfully', data: user });
 });
 
-/**
- * @desc    Upload or update profile photo
- * @route   PUT /api/user/profile-photo
- * @access  Private (User)
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// Profile photo
+// ─────────────────────────────────────────────────────────────────────────────
 const updateProfilePhoto = asyncHandler(async (req, res) => {
-  const { profilePhoto } = req.body;
-
-  if (!profilePhoto) {
-    throw new ApiError('Profile photo is required', 400);
+  if (!req.file || !req.file.path) {
+    throw new ApiError('Profile photo file is required', 400);
   }
 
-  // Validate base64 image format
-  const base64Regex = /^data:image\/(png|jpg|jpeg|gif|webp);base64,/;
-  if (!base64Regex.test(profilePhoto)) {
-    throw new ApiError('Invalid image format. Please upload a valid image (PNG, JPG, JPEG, GIF, or WebP)', 400);
-  }
-
-  // Check file size (limit to 5MB)
-  const sizeInBytes = (profilePhoto.length * 3) / 4;
-  const maxSize = 5 * 1024 * 1024; // 5MB
-  if (sizeInBytes > maxSize) {
-    throw new ApiError('Image size too large. Maximum size is 5MB', 400);
-  }
+  const photoUrl = req.file.path;
 
   const user = await User.findByIdAndUpdate(
     req.user._id,
-    { profilePhoto },
+    { profilePhoto: photoUrl },
     { new: true, runValidators: true }
   );
 
   res.json({
     success: true,
     message: 'Profile photo updated successfully',
-    data: {
-      profilePhoto: user.profilePhoto,
-    },
+    data: { profilePhoto: user.profilePhoto },
   });
 });
 
-/**
- * @desc    Delete profile photo
- * @route   DELETE /api/user/profile-photo
- * @access  Private (User)
- */
 const deleteProfilePhoto = asyncHandler(async (req, res) => {
-  const user = await User.findByIdAndUpdate(
-    req.user._id,
-    { profilePhoto: null },
-    { new: true, runValidators: true }
-  );
+  await User.findByIdAndUpdate(req.user._id, { profilePhoto: null });
 
   res.json({
     success: true,
     message: 'Profile photo deleted successfully',
-    data: {
-      profilePhoto: null,
-    },
+    data: { profilePhoto: null },
   });
 });
 
-/**
- * @desc    Get user's assigned profiles
- * @route   GET /api/user/profiles
- * @access  Private (User)
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// Assigned profiles
+// ─────────────────────────────────────────────────────────────────────────────
 const getAssignedProfiles = asyncHandler(async (req, res) => {
-  // Get profiles where user is default worker or has active temporary assignment
   const now = new Date();
-  
+
   const profiles = await Profile.find({
     $or: [
       { defaultWorker: req.user._id },
+      { secondWorker: req.user._id },
       {
         temporaryAssignments: {
           $elemMatch: {
@@ -116,40 +99,31 @@ const getAssignedProfiles = asyncHandler(async (req, res) => {
       },
     ],
     isActive: true,
-  }).select('fullName email state country');  // Only show allowed fields for users
+  }).select('fullName email state country');
 
-  res.json({
-    success: true,
-    count: profiles.length,
-    data: profiles,
-  });
+  res.json({ success: true, count: profiles.length, data: profiles });
 });
 
-/**
- * @desc    Create time/quality entry for a profile
- * @route   POST /api/user/entry
- * @access  Private (User)
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// Entry CRUD
+// ─────────────────────────────────────────────────────────────────────────────
 const createEntry = asyncHandler(async (req, res) => {
   const { profileId, date, time, quality, notes } = req.body;
 
-  // Verify profile exists and user is assigned to it
   const profile = await Profile.findById(profileId);
-  if (!profile) {
-    throw new ApiError('Profile not found', 404);
+  if (!profile) throw new ApiError('Profile not found', 404);
+  if (!profile.isActive) throw new ApiError('Profile is not active', 403);
+
+  if (!profile.isWorkerAssigned(req.user._id)) {
+    throw new ApiError('You are not currently assigned to this profile', 403);
   }
 
-  // Check if user is currently assigned to this profile
-  const currentWorker = profile.getCurrentWorker();
-  if (!currentWorker || currentWorker.toString() !== req.user._id.toString()) {
-    throw new ApiError('You are not assigned to this profile', 403);
-  }
+  const datePart = date.toString().split('T')[0];
+  const [yyyy, mm, dd] = datePart.split('-').map(Number);
+  if (!yyyy || !mm || !dd) throw new ApiError('Invalid date format. Use YYYY-MM-DD', 400);
 
-  // Parse date
-  const entryDate = new Date(date);
-  entryDate.setHours(0, 0, 0, 0);
+  const entryDate = new Date(Date.UTC(yyyy, mm - 1, dd));
 
-  // Check if entry already exists for this date
   let entry = await Entry.findOne({
     profile: profileId,
     worker: req.user._id,
@@ -157,97 +131,61 @@ const createEntry = asyncHandler(async (req, res) => {
   });
 
   if (entry) {
-    // Check if already approved - cannot edit
     if (entry.adminApproved) {
-      throw new ApiError('Cannot edit an approved entry', 403);
+      throw new ApiError('Cannot edit an already approved entry', 403);
     }
-
-    // Update existing entry
     entry.time = time;
     entry.quality = quality;
     if (notes !== undefined) entry.notes = notes;
     await entry.save();
 
-    res.json({
-      success: true,
-      message: 'Entry updated successfully',
-      data: entry,
-    });
-  } else {
-    // Create new entry
-    entry = await Entry.create({
-      profile: profileId,
-      worker: req.user._id,
-      date: entryDate,
-      time,
-      quality,
-      notes,
-    });
-
-    res.status(201).json({
-      success: true,
-      message: 'Entry created successfully',
-      data: entry,
-    });
+    return res.json({ success: true, message: 'Entry updated successfully', data: entry });
   }
+
+  entry = await Entry.create({
+    profile: profileId,
+    worker: req.user._id,
+    date: entryDate,
+    time,
+    quality,
+    notes,
+  });
+
+  res.status(201).json({ success: true, message: 'Entry submitted successfully', data: entry });
 });
 
-/**
- * @desc    Update an existing entry
- * @route   PUT /api/user/entry/:id
- * @access  Private (User)
- */
 const updateEntry = asyncHandler(async (req, res) => {
   const { time, quality, notes } = req.body;
 
   const entry = await Entry.findById(req.params.id);
-  if (!entry) {
-    throw new ApiError('Entry not found', 404);
-  }
+  if (!entry) throw new ApiError('Entry not found', 404);
 
-  // Check if user owns this entry
   if (entry.worker.toString() !== req.user._id.toString()) {
     throw new ApiError('You can only edit your own entries', 403);
   }
-
-  // Check if already approved
   if (entry.adminApproved) {
     throw new ApiError('Cannot edit an approved entry', 403);
   }
 
-  // Update fields
   if (time !== undefined) entry.time = time;
   if (quality !== undefined) entry.quality = quality;
   if (notes !== undefined) entry.notes = notes;
 
   await entry.save();
 
-  res.json({
-    success: true,
-    message: 'Entry updated successfully',
-    data: entry,
-  });
+  res.json({ success: true, message: 'Entry updated successfully', data: entry });
 });
 
-/**
- * @desc    Get user's entries
- * @route   GET /api/user/entries
- * @access  Private (User)
- */
 const getEntries = asyncHandler(async (req, res) => {
   const { startDate, endDate, profileId, page = 1, limit = 50 } = req.query;
 
   const query = { worker: req.user._id };
-
-  if (startDate) {
-    query.date = { ...query.date, $gte: new Date(startDate) };
+  if (startDate || endDate) {
+    query.date = {};
+    if (startDate) query.date.$gte = new Date(startDate);
+    if (endDate) query.date.$lte = new Date(endDate);
   }
-  if (endDate) {
-    query.date = { ...query.date, $lte: new Date(endDate) };
-  }
-  if (profileId) {
-    query.profile = profileId;
-  }
+  if (profileId) query.profile = profileId;
 
   const entries = await Entry.find(query)
     .populate('profile', 'fullName email')
@@ -267,107 +205,106 @@ const getEntries = asyncHandler(async (req, res) => {
   });
 });
 
-/**
- * @desc    Get user dashboard with performance data
- * @route   GET /api/user/dashboard
- * @access  Private (User)
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// Dashboard – fixed version (no benchmark.calculatePercentage crash)
+// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// getDashboard — FIXED
+// Remove: benchmark.calculatePercentage (does not exist on your Benchmark model)
+// Remove: benchmark.calculateEarnings (not needed — payment = rate × hours only)
+// ---------------------------------------------------------------------------
+
 const getDashboard = asyncHandler(async (req, res) => {
   const { startDate, endDate } = req.query;
-  
-  // Default to last 30 days if no dates provided
-  const end = endDate ? new Date(endDate) : new Date();
+
+  const end   = endDate   ? new Date(endDate)   : new Date();
   const start = startDate ? new Date(startDate) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
-  // Get entries for the period
   const entries = await Entry.find({
     worker: req.user._id,
     date: { $gte: start, $lte: end },
+    adminApproved: true,
   })
     .populate('profile', 'fullName')
     .sort({ date: 1 });
 
-  // Get current benchmark
-  const benchmark = await Benchmark.getCurrentBenchmark() || await Benchmark.getLatestBenchmark();
+  const benchmark =
+    (await Benchmark.getCurrentBenchmark()) || (await Benchmark.getLatestBenchmark());
 
-  // Calculate statistics
-  const totalTime = entries.reduce((sum, e) => sum + e.time, 0);
-  const totalQuality = entries.reduce((sum, e) => sum + e.quality, 0);
-  const avgTime = entries.length > 0 ? totalTime / entries.length : 0;
-  const avgQuality = entries.length > 0 ? totalQuality / entries.length : 0;
+  const totalTime    = entries.reduce((s, e) => s + (e.adminTime    ?? e.time),    0);
+  const totalQuality = entries.reduce((s, e) => s + (e.adminQuality ?? e.quality), 0);
+  const avgTime      = entries.length > 0 ? totalTime    / entries.length : 0;
+  const avgQuality   = entries.length > 0 ? totalQuality / entries.length : 0;
 
-  // Calculate weekly summaries
+  // Performance score for display only (not used for pay)
+  const overallPerformance = avgQuality * 0.6 + avgTime * 0.4;
+
+  const weekStartDay = req.user.weekStartDay ?? 2;
   const weeklySummaries = {};
   entries.forEach((entry) => {
-    const key = `${entry.year}-W${entry.weekNumber}`;
+    const { weekStart } = WeeklyPayment.getWeekBoundaries(entry.date, weekStartDay);
+    const key = weekStart.toISOString();
     if (!weeklySummaries[key]) {
-      weeklySummaries[key] = {
-        week: key,
-        totalTime: 0,
-        totalQuality: 0,
-        entries: 0,
-      };
+      weeklySummaries[key] = { weekStart, totalTime: 0, totalQuality: 0, entries: 0 };
     }
-    weeklySummaries[key].totalTime += entry.time;
-    weeklySummaries[key].totalQuality += entry.quality;
-    weeklySummaries[key].entries += 1;
+    weeklySummaries[key].totalTime    += entry.adminTime    ?? entry.time;
+    weeklySummaries[key].totalQuality += entry.adminQuality ?? entry.quality;
+    weeklySummaries[key].entries      += 1;
   });
 
-  // Convert to array and calculate averages
-  const weeklyData = Object.values(weeklySummaries).map((week) => ({
-    ...week,
-    avgTime: Math.round((week.totalTime / week.entries) * 100) / 100,
-    avgQuality: Math.round((week.totalQuality / week.entries) * 100) / 100,
+  const weeklyData = Object.values(weeklySummaries).map((w) => ({
+    weekStart:  w.weekStart,
+    totalTime:  Math.round(w.totalTime  * 100) / 100,
+    entries:    w.entries,
+    avgTime:    Math.round((w.totalTime  / w.entries) * 100) / 100,
+    avgQuality: Math.round((w.totalQuality / w.entries) * 100) / 100,
   }));
 
-  // Calculate performance percentages and earnings
-  let performanceMetrics = null;
-  let earningsData = null;
-  const hourlyRate = parseInt(process.env.HOURLY_RATE) || 2000;
+  // Payment = rate × hours ONLY — no multiplier, no calculatePercentage/calculateEarnings
+  const hourlyRate   = (benchmark && benchmark.payPerHour) || parseInt(process.env.HOURLY_RATE) || 2000;
+  const baseEarnings = totalTime * hourlyRate;
+  const extraBonus   = req.user.extraBonus || 0;
 
-  if (benchmark) {
-    performanceMetrics = benchmark.calculatePercentage(avgTime, avgQuality);
-    earningsData = benchmark.calculateEarnings(totalTime, performanceMetrics.overallPercentage, hourlyRate);
-    
-    // Add extra bonus from user profile
-    if (req.user.extraBonus > 0) {
-      earningsData.extraBonus = req.user.extraBonus;
-      earningsData.finalEarnings += req.user.extraBonus;
-    }
-  } else {
-    // Default calculation without benchmark
-    earningsData = {
-      baseEarnings: totalTime * hourlyRate,
-      multiplier: 1,
-      tier: 'average',
-      bonus: 0,
-      finalEarnings: totalTime * hourlyRate,
-      extraBonus: req.user.extraBonus || 0,
-    };
-    earningsData.finalEarnings += earningsData.extraBonus;
-  }
+  const earningsData = {
+    baseEarnings,
+    multiplier:    1,
+    tier:          'standard',
+    bonus:         0,
+    hourlyRate,
+    extraBonus,
+    finalEarnings: baseEarnings + extraBonus,
+  };
 
-  // Daily data for graphs
-  const dailyData = entries.map((entry) => ({
-    date: entry.date,
-    time: entry.time,
-    quality: entry.quality,
-    profile: entry.profile?.fullName,
-    adminApproved: entry.adminApproved,
-    effectiveTime: entry.effectiveTime,
-    effectiveQuality: entry.effectiveQuality,
+  // Determine tier label for frontend display (no calculation, just label)
+  let tierLabel = 'below';
+  if      (overallPerformance >= 80) tierLabel = 'excellent';
+  else if (overallPerformance >= 70) tierLabel = 'good';
+  else if (overallPerformance >= 60) tierLabel = 'average';
+  earningsData.tier = tierLabel;
+
+  const dailyData = entries.map((e) => ({
+    _id:              String(e._id),
+    date:             e.date,
+    time:             e.adminTime    ?? e.time,
+    quality:          e.adminQuality ?? e.quality,
+    effectiveTime:    e.adminTime    ?? e.time,
+    effectiveQuality: e.adminQuality ?? e.quality,
+    profile:          e.profile?.fullName || 'unknown',
+    adminApproved:    e.adminApproved,
+    notes:            e.notes || '',
   }));
 
-  // Get assigned profiles count
+  const now = new Date();
   const assignedProfilesCount = await Profile.countDocuments({
     $or: [
       { defaultWorker: req.user._id },
+      { secondWorker:  req.user._id },
       {
         temporaryAssignments: {
           $elemMatch: {
-            worker: req.user._id,
-            startDate: { $lte: new Date() },
-            endDate: { $gte: new Date() },
+            worker:    req.user._id,
+            startDate: { $lte: now },
+            endDate:   { $gte: now },
           },
         },
       },
@@ -378,23 +315,25 @@ const getDashboard = asyncHandler(async (req, res) => {
     success: true,
     data: {
       summary: {
-        totalEntries: entries.length,
-        totalTime: Math.round(totalTime * 100) / 100,
-        totalQuality: Math.round(totalQuality * 100) / 100,
-        avgTime: Math.round(avgTime * 100) / 100,
-        avgQuality: Math.round(avgQuality * 100) / 100,
-        overallPerformance: Math.round((avgQuality * 0.6 + avgTime * 0.4) * 100) / 100,
-        assignedProfiles: assignedProfilesCount,
+        totalEntries:       entries.length,
+        totalTime:          Math.round(totalTime    * 100) / 100,
+        avgTime:            Math.round(avgTime      * 100) / 100,
+        avgQuality:         Math.round(avgQuality   * 100) / 100,
+        overallPerformance: Math.round(overallPerformance * 100) / 100,
+        assignedProfiles:   assignedProfilesCount,
       },
-      performance: performanceMetrics,
-      earnings: earningsData,
-      benchmark: benchmark ? {
-        timeBenchmark: benchmark.timeBenchmark,
-        qualityBenchmark: benchmark.qualityBenchmark,
-        thresholds: benchmark.thresholds,
-        startDate: benchmark.startDate,
-        endDate: benchmark.endDate,
-      } : null,
+      performance: null,   // removed — calculatePercentage doesn't exist
+      earnings:    earningsData,
+      benchmark: benchmark
+        ? {
+            timeBenchmark:    benchmark.timeBenchmark,
+            qualityBenchmark: benchmark.qualityBenchmark,
+            thresholds:       benchmark.thresholds,
+            startDate:        benchmark.startDate,
+            endDate:          benchmark.endDate,
+            payPerHour:       benchmark.payPerHour,
+          }
+        : null,
       weeklyData,
       dailyData,
       dateRange: { start, end },
@@ -402,45 +341,97 @@ const getDashboard = asyncHandler(async (req, res) => {
   });
 });
 
-/**
- * @desc    Get weekly summary for user
- * @route   GET /api/user/weekly-summary
- * @access  Private (User)
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// Weekly summary
+// ─────────────────────────────────────────────────────────────────────────────
 const getWeeklySummary = asyncHandler(async (req, res) => {
-  const { weekNumber, year } = req.query;
-  
-  const currentDate = new Date();
-  const currentYear = year ? parseInt(year) : currentDate.getFullYear();
-  const firstDayOfYear = new Date(currentYear, 0, 1);
-  const pastDaysOfYear = (currentDate - firstDayOfYear) / 86400000;
-  const currentWeek = weekNumber ? parseInt(weekNumber) : Math.ceil((pastDaysOfYear + firstDayOfYear.getDay() + 1) / 7);
+  const weekStartDay = req.user.weekStartDay ?? 2;
 
-  const summary = await Entry.getWeeklySummary(req.user._id, currentWeek, currentYear);
+  const referenceDate = req.query.weekStart ? new Date(req.query.weekStart) : new Date();
+  const { weekStart, weekEnd } = WeeklyPayment.getWeekBoundaries(referenceDate, weekStartDay);
+  const { weekNumber, year } = WeeklyPayment.getWeekNumberAndYear(weekStart);
 
-  const benchmark = await Benchmark.getCurrentBenchmark();
+  const summaryRaw = await Entry.aggregate([
+    {
+      $match: {
+        worker: req.user._id,
+        date: { $gte: weekStart, $lte: weekEnd },
+        adminApproved: true,
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        totalTime: { $sum: { $ifNull: ['$adminTime', '$time'] } },
+        totalQuality: { $sum: { $ifNull: ['$adminQuality', '$quality'] } },
+        avgTime: { $avg: { $ifNull: ['$adminTime', '$time'] } },
+        avgQuality: { $avg: { $ifNull: ['$adminQuality', '$quality'] } },
+        entries: { $sum: 1 },
+      },
+    },
+  ]);
 
   res.json({
     success: true,
     data: {
-      week: currentWeek,
-      year: currentYear,
-      summary: summary[0] || {
+      weekNumber,
+      year,
+      weekStart,
+      weekEnd,
+      summary: summaryRaw[0] || {
         totalTime: 0,
         totalQuality: 0,
         avgTime: 0,
         avgQuality: 0,
         entries: 0,
       },
-      benchmark: benchmark ? {
-        time: benchmark.timeBenchmark,
-        quality: benchmark.qualityBenchmark,
-      } : null,
     },
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Payment history
+// ─────────────────────────────────────────────────────────────────────────────
+const getMyPayments = asyncHandler(async (req, res) => {
+  const page = Math.max(1, parseInt(req.query.page) || 1);
+  const limit = Math.min(500, parseInt(req.query.limit) || 50);
+  const skip = (page - 1) * limit;
+
+  const query = { user: req.user._id };
+  if (req.query.paymentType) query.paymentType = req.query.paymentType;
+
+  const [payments, total] = await Promise.all([
+    WeeklyPayment.find(query)
+      .sort({ weekStart: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    WeeklyPayment.countDocuments(query),
+  ]);
+
+  res.json({
+    success: true,
+    data: payments,
+    pagination: {
+      page,
+      pages: Math.ceil(total / limit),
+      total,
+      count: payments.length,
+    },
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Current user profile
+// ─────────────────────────────────────────────────────────────────────────────
+const getProfile = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.user._id).select('-password');
+  if (!user) throw new ApiError('User not found', 404);
+  res.json({ success: true, data: user });
+});
+
 module.exports = {
+  updateProfile,
   updateBankDetails,
   updateProfilePhoto,
   deleteProfilePhoto,
@@ -450,4 +441,6 @@ module.exports = {
   getEntries,
   getDashboard,
   getWeeklySummary,
+  getMyPayments,
+  getProfile,
 };

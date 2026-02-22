@@ -1,6 +1,9 @@
 const express = require('express');
 const router = express.Router();
+
 const {
+  getProfile,
+  updateProfile,          // FIX: handles name + phone, was missing from routes
   updateBankDetails,
   updateProfilePhoto,
   deleteProfilePhoto,
@@ -10,11 +13,12 @@ const {
   getEntries,
   getDashboard,
   getWeeklySummary,
+  getMyPayments,
 } = require('../controllers/userController');
-const { protect, authorize } = require('../middleware/auth');
+
+const { protect } = require('../middleware/auth');
 const {
   updateBankDetailsValidation,
-  updateProfilePhotoValidation,
   createEntryValidation,
   updateEntryValidation,
   mongoIdParam,
@@ -22,26 +26,40 @@ const {
   dateRangeQuery,
 } = require('../middleware/validate');
 
-// All routes require authentication
+const upload = require('../middleware/upload');
+
+// All user routes require authentication
 router.use(protect);
+
+// ─── Profile ─────────────────────────────────────────────────────────────────
+
+router.get('/profile', getProfile);
+
+// FIX: This route was MISSING — caused 404 on PUT /api/user/profile
+// Used by the profile page to update phone number (and name)
+router.put('/profile', updateProfile);
 
 // Bank details
 router.put('/bank', updateBankDetailsValidation, updateBankDetails);
 
 // Profile photo
-router.put('/profile-photo', updateProfilePhotoValidation, updateProfilePhoto);
+router.put('/profile-photo', upload.single('photo'), updateProfilePhoto);
 router.delete('/profile-photo', deleteProfilePhoto);
 
-// Profiles
+// ─── Profiles (assigned client accounts) ─────────────────────────────────────
+
 router.get('/profiles', getAssignedProfiles);
 
-// Entries
+// ─── Entries ─────────────────────────────────────────────────────────────────
+
 router.post('/entry', createEntryValidation, createEntry);
 router.put('/entry/:id', mongoIdParam('id'), updateEntryValidation, updateEntry);
 router.get('/entries', paginationQuery, dateRangeQuery, getEntries);
 
-// Dashboard & Stats
+// ─── Dashboard & payments ────────────────────────────────────────────────────
+
 router.get('/dashboard', dateRangeQuery, getDashboard);
 router.get('/weekly-summary', getWeeklySummary);
+router.get('/payments', getMyPayments);
 
 module.exports = router;
