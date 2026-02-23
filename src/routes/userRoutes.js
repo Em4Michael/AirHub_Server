@@ -3,7 +3,7 @@ const router = express.Router();
 
 const {
   getProfile,
-  updateProfile,          // FIX: handles name + phone, was missing from routes
+  updateProfile,
   updateBankDetails,
   updateProfilePhoto,
   deleteProfilePhoto,
@@ -26,24 +26,17 @@ const {
   dateRangeQuery,
 } = require('../middleware/validate');
 
-const upload = require('../middleware/upload');
-
 // All user routes require authentication
 router.use(protect);
 
 // ─── Profile ─────────────────────────────────────────────────────────────────
 
 router.get('/profile', getProfile);
-
-// FIX: This route was MISSING — caused 404 on PUT /api/user/profile
-// Used by the profile page to update phone number (and name)
 router.put('/profile', updateProfile);
-
-// Bank details
 router.put('/bank', updateBankDetailsValidation, updateBankDetails);
 
-// Profile photo
-router.put('/profile-photo', upload.single('photo'), updateProfilePhoto);
+// Profile photo — no multer, accepts base64 JSON body
+router.put('/profile-photo', updateProfilePhoto);
 router.delete('/profile-photo', deleteProfilePhoto);
 
 // ─── Profiles (assigned client accounts) ─────────────────────────────────────

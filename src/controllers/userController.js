@@ -8,20 +8,24 @@ const { asyncHandler, ApiError } = require('../middleware/errorHandler');
 // ─────────────────────────────────────────────────────────────────────────────
 // Update Profile (phone, name, etc.)
 // ─────────────────────────────────────────────────────────────────────────────
-const updateProfile = asyncHandler(async (req, res) => {
-  const { phone, name } = req.body;
+const updateProfilePhoto = asyncHandler(async (req, res) => {
+  const photoUrl = req.body?.photo;
 
-  const updateFields = {};
-  if (phone !== undefined) updateFields.phone = phone;
-  if (name !== undefined) updateFields.name = name;
+  if (!photoUrl) {
+    throw new ApiError('Profile photo is required', 400);
+  }
 
   const user = await User.findByIdAndUpdate(
     req.user._id,
-    updateFields,
+    { profilePhoto: photoUrl },
     { new: true, runValidators: true }
-  ).select('-password');
+  );
 
-  res.json({ success: true, message: 'Profile updated successfully', data: user });
+  res.json({
+    success: true,
+    message: 'Profile photo updated successfully',
+    data: { profilePhoto: user.profilePhoto },
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
