@@ -76,7 +76,7 @@ const getAllUsers = asyncHandler(async (req, res) => {
     .populate('assignedProfiles', 'fullName email')
     .sort({ createdAt: -1 })
     .skip((page - 1) * limit)
-    .limit(Math.min(parseInt(limit), 500)); // cap at 500
+    .limit(Math.min(parseInt(limit), 500)); // raised cap to 500
 
   const total = await User.countDocuments(query);
 
