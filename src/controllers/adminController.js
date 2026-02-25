@@ -59,7 +59,7 @@ const getPendingUsers = asyncHandler(async (req, res) => {
  * FIX (Issue 1): phone is included by default (not excluded).
  */
 const getAllUsers = asyncHandler(async (req, res) => {
-  const { page = 1, limit = 200, role, isApproved, search } = req.query;
+  const { page = 1, limit = 500, role, isApproved, search } = req.query;
   const query = {};
   if (role) query.role = role;
   if (isApproved !== undefined) query.isApproved = isApproved === 'true';
