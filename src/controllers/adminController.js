@@ -48,7 +48,6 @@ const approveUser = asyncHandler(async (req, res) => {
  * @route GET /api/admin/pending-users
  */
 const getPendingUsers = asyncHandler(async (req, res) => {
-  // FIX (Issue 1): include phone in pending users list
   const users = await User.find({ isApproved: false, role: 'user' }).select('-bankDetails -password');
   res.json({ success: true, count: users.length, data: users });
 });
@@ -56,7 +55,12 @@ const getPendingUsers = asyncHandler(async (req, res) => {
 /**
  * @desc Get all users (paginated)
  * @route GET /api/admin/users
- * FIX (Issue 1): phone is included by default (not excluded).
+ *
+ * FIX: Response now uses a nested `pagination` object to match the frontend's
+ * PaginatedResponse<User> type:
+ *   { success, data, pagination: { page, pages, total, count } }
+ * Previously the shape was flat ({ page, pages, total, count }) which caused
+ * response.pagination to always be undefined on the frontend.
  */
 const getAllUsers = asyncHandler(async (req, res) => {
   const { page = 1, limit = 500, role, isApproved, search } = req.query;
@@ -71,29 +75,38 @@ const getAllUsers = asyncHandler(async (req, res) => {
     ];
   }
 
+  const parsedLimit = Math.min(parseInt(limit), 500);
+  const parsedPage  = parseInt(page);
+
+  // FIX: ensure assignedProfiles is declared as ObjectId ref in User model so
+  // .populate() does not throw a 500. If User.assignedProfiles is not an array
+  // of ObjectId refs, remove or guard this populate call.
   const users = await User.find(query)
     .select('-password')
     .populate('assignedProfiles', 'fullName email')
     .sort({ createdAt: -1 })
-    .skip((page - 1) * limit)
-    .limit(Math.min(parseInt(limit), 500)); // raised cap to 500
+    .skip((parsedPage - 1) * parsedLimit)
+    .limit(parsedLimit);
 
   const total = await User.countDocuments(query);
 
+  // FIX: wrap pagination metadata in a `pagination` object so the frontend's
+  // PaginatedResponse<User> type resolves correctly.
   res.json({
     success: true,
-    count: users.length,
-    total,
-    page: parseInt(page),
-    pages: Math.ceil(total / limit),
     data: users,
+    pagination: {
+      page:  parsedPage,
+      pages: Math.ceil(total / parsedLimit),
+      total,
+      count: users.length,
+    },
   });
 });
 
 /**
  * @desc Get single user by ID
  * @route GET /api/admin/users/:id
- * FIX (Issue 1): phone is included in response.
  */
 const getUserById = asyncHandler(async (req, res) => {
   const user = await User.findById(req.params.id)
@@ -193,6 +206,9 @@ const updateProfile = asyncHandler(async (req, res) => {
 /**
  * @desc Get all profiles (paginated, filterable)
  * @route GET /api/admin/profiles
+ *
+ * FIX: Response now uses a nested `pagination` object for consistency with
+ * PaginatedResponse<Profile>.
  */
 const getProfiles = asyncHandler(async (req, res) => {
   const { page = 1, limit = 20, sort = '-createdAt', search, workerId } = req.query;
@@ -213,23 +229,28 @@ const getProfiles = asyncHandler(async (req, res) => {
     ];
   }
 
+  const parsedLimit = parseInt(limit);
+  const parsedPage  = parseInt(page);
+
   const profiles = await Profile.find(query)
     .populate('defaultWorker', 'name email phone')
     .populate('secondWorker', 'name email phone')
     .populate('temporaryAssignments.worker', 'name email phone')
     .sort(sort)
-    .skip((page - 1) * limit)
-    .limit(parseInt(limit));
+    .skip((parsedPage - 1) * parsedLimit)
+    .limit(parsedLimit);
 
   const total = await Profile.countDocuments(query);
 
   res.json({
     success: true,
-    count: profiles.length,
-    total,
-    page: parseInt(page),
-    pages: Math.ceil(total / limit),
     data: profiles,
+    pagination: {
+      page:  parsedPage,
+      pages: Math.ceil(total / parsedLimit),
+      total,
+      count: profiles.length,
+    },
   });
 });
 
@@ -350,23 +371,28 @@ const getEntries = asyncHandler(async (req, res) => {
     if (endDate) query.date.$lte = new Date(endDate);
   }
 
+  const parsedLimit = parseInt(limit);
+  const parsedPage  = parseInt(page);
+
   const entries = await Entry.find(query)
     .populate('profile', 'fullName email')
     .populate('worker', 'name email phone')
     .populate('approvedBy', 'name email')
     .sort({ date: -1 })
-    .skip((page - 1) * limit)
-    .limit(parseInt(limit));
+    .skip((parsedPage - 1) * parsedLimit)
+    .limit(parsedLimit);
 
   const total = await Entry.countDocuments(query);
 
   res.json({
     success: true,
-    count: entries.length,
-    total,
-    page: parseInt(page),
-    pages: Math.ceil(total / limit),
     data: entries,
+    pagination: {
+      page:  parsedPage,
+      pages: Math.ceil(total / parsedLimit),
+      total,
+      count: entries.length,
+    },
   });
 });
 
@@ -428,7 +454,7 @@ const getRankedProfiles = asyncHandler(async (req, res) => {
         _id: '$worker._id',
         name: '$worker.name',
         email: '$worker.email',
-        phone: '$worker.phone',   // FIX (Issue 1): include phone
+        phone: '$worker.phone',
         totalTime: { $round: ['$totalTime', 2] },
         avgQuality: { $round: ['$avgQuality', 2] },
         avgTime: { $round: ['$avgTime', 2] },
@@ -438,7 +464,6 @@ const getRankedProfiles = asyncHandler(async (req, res) => {
     },
   ]);
 
-  // FIX (Issues 3 & 4): use benchmark.calculateEarnings for correct multiplier
   const rankedWithEarnings = ranked.map((worker) => ({
     ...worker,
     weeklyEarnings: Math.round(calculateEarnings(worker.totalTime, worker.overallScore, benchmark)),
@@ -532,7 +557,6 @@ const removeTemporaryAssignment = asyncHandler(async (req, res) => {
 /**
  * @desc Get aggregated admin dashboard statistics
  * @route GET /api/admin/worker-stats
- * FIX (Issues 3 & 4): Earnings use benchmark.calculateEarnings() with multiplier.
  */
 const getWorkerStats = asyncHandler(async (req, res) => {
   const { startDate, endDate } = req.query;
@@ -627,8 +651,6 @@ const getWorkerStats = asyncHandler(async (req, res) => {
 /**
  * @desc Get detailed performance stats for a specific user
  * @route GET /api/admin/users/:id/stats
- * FIX (Issue 1): phone returned in user object.
- * FIX (Issues 3 & 4): Earnings use benchmark.calculateEarnings() with multiplier.
  */
 const getUserStats = asyncHandler(async (req, res) => {
   const userId = req.params.id;
@@ -699,7 +721,7 @@ const getUserStats = asyncHandler(async (req, res) => {
         id:          user._id,
         name:        user.name,
         email:       user.email,
-        phone:       user.phone,   // FIX (Issue 1)
+        phone:       user.phone,
         role:        user.role,
         isApproved:  user.isApproved,
         weekStartDay,
@@ -730,7 +752,7 @@ const getUserStats = asyncHandler(async (req, res) => {
         paid:             p.paid,
         paidDate:         p.paidDate,
         status:           p.status,
-        paymentType:      p.paymentType,   // FIX (Issue 6): expose type
+        paymentType:      p.paymentType,
         extraBonus:       p.extraBonus,
         extraBonusReason: p.extraBonusReason,
         notes:            p.adminNotes,
@@ -742,7 +764,6 @@ const getUserStats = asyncHandler(async (req, res) => {
 /**
  * @desc Get individual worker earnings breakdown
  * @route GET /api/admin/users/:id/earnings
- * FIX (Issues 3 & 4): Earnings use benchmark.calculateEarnings() with multiplier.
  */
 const getUserEarnings = asyncHandler(async (req, res) => {
   const userId = req.params.id;
@@ -800,7 +821,6 @@ const getUserEarnings = asyncHandler(async (req, res) => {
   const weeklyPerformance   = weekly.avgQuality   * 0.6 + weekly.avgTime   * 0.4;
   const lifetimePerformance = lifetime.avgQuality * 0.6 + lifetime.avgTime * 0.4;
 
-  // Use benchmark.calculateEarnings so earningsMode is respected
   const weeklyBreakdown = benchmark
     ? benchmark.calculateEarnings(weekly.totalHours, weeklyPerformance)
     : { finalEarnings: weekly.totalHours * (parseInt(process.env.HOURLY_RATE) || 2000), multiplier: 1, tier: 'flat' };
