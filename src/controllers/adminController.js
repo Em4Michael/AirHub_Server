@@ -78,12 +78,11 @@ const getAllUsers = asyncHandler(async (req, res) => {
   const parsedLimit = Math.min(parseInt(limit), 500);
   const parsedPage  = parseInt(page);
 
-  // FIX: ensure assignedProfiles is declared as ObjectId ref in User model so
-  // .populate() does not throw a 500. If User.assignedProfiles is not an array
-  // of ObjectId refs, remove or guard this populate call.
+  // NOTE: assignedProfiles is NOT populated here — the list page doesn't need it
+  // and a missing/misconfigured ref on the User model would cause a 500.
+  // Use GET /admin/users/:id to get a single user with populated assignedProfiles.
   const users = await User.find(query)
     .select('-password')
-    .populate('assignedProfiles', 'fullName email')
     .sort({ createdAt: -1 })
     .skip((parsedPage - 1) * parsedLimit)
     .limit(parsedLimit);
