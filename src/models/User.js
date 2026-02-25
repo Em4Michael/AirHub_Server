@@ -25,9 +25,6 @@ const userSchema = new mongoose.Schema(
       trim: true,
       maxlength: [100, 'Name cannot exceed 100 characters'],
     },
-    /**
-     * Phone number — optional, used for contact and payment details.
-     */
     phone: {
       type: String,
       trim: true,
@@ -39,6 +36,16 @@ const userSchema = new mongoose.Schema(
       enum: ['user', 'admin', 'superadmin'],
       default: 'user',
     },
+    /**
+     * status mirrors isApproved but as a string for frontend badge display.
+     * Values: 'pending' | 'approved' | 'revoked'
+     * Set explicitly on approve/revoke; derived from isApproved for old docs.
+     */
+    status: {
+      type: String,
+      enum: ['pending', 'approved', 'revoked'],
+      default: 'pending',
+    },
     isApproved: {
       type: Boolean,
       default: false,
@@ -47,7 +54,6 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
-    // Profile photo — stores Cloudinary URL (uploaded via multer-cloudinary)
     profilePhoto: {
       type: String,
       default: null,
@@ -71,8 +77,7 @@ const userSchema = new mongoose.Schema(
       },
     },
     /**
-     * weekStartDay defines the start of the user's weekly reporting period.
-     * 0 = Sunday, 1 = Monday, 2 = Tuesday (default), …, 6 = Saturday
+     * weekStartDay: 0 = Sunday, 1 = Monday, 2 = Tuesday (default), …, 6 = Saturday
      */
     weekStartDay: {
       type: Number,
@@ -90,23 +95,40 @@ const userSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    extraBonusReason: {
+      type: String,
+      default: '',
+    },
     // Password reset fields
-    passwordResetToken: String,
+    passwordResetToken:   String,
     passwordResetExpires: Date,
-    passwordChangedAt: Date,
-    lastLogin: Date,
+    passwordChangedAt:    Date,
+    lastLogin:            Date,
   },
   {
     timestamps: true,
-    toJSON: { virtuals: true },
+    toJSON:   { virtuals: true },
     toObject: { virtuals: true },
   }
 );
 
-// Indexes
+// ── Indexes ───────────────────────────────────────────────────────────────────
+
+// Original indexes
 userSchema.index({ email: 1 });
 userSchema.index({ role: 1, isApproved: 1 });
 userSchema.index({ passwordResetToken: 1, passwordResetExpires: 1 });
+
+// FIX: Sort performance indexes — prevent "Sort exceeded memory limit of
+//      33554432 bytes" on MongoDB Atlas M0 / free-tier clusters.
+//      With these indexes MongoDB resolves the sort via the index without
+//      loading all documents into memory, making allowDiskUse a safety net
+//      rather than a requirement.
+userSchema.index({ createdAt: -1 });                        // covers default sort
+userSchema.index({ role: 1,       createdAt: -1 });         // covers role-filtered list
+userSchema.index({ isApproved: 1, role: 1, createdAt: -1 }); // covers pending-users query
+
+// ── Hooks ─────────────────────────────────────────────────────────────────────
 
 // Hash password before saving
 userSchema.pre('save', async function (next) {
@@ -122,6 +144,23 @@ userSchema.pre('save', function (next) {
   this.passwordChangedAt = Date.now() - 1000;
   next();
 });
+
+// Keep status in sync with isApproved / isActive so old documents that
+// pre-date the status field still have a consistent value.
+userSchema.pre('save', function (next) {
+  if (this.isModified('isApproved') || this.isModified('isActive') || this.isNew) {
+    if (!this.isActive) {
+      this.status = 'revoked';
+    } else if (this.isApproved) {
+      this.status = 'approved';
+    } else {
+      this.status = this.status || 'pending';
+    }
+  }
+  next();
+});
+
+// ── Instance methods ──────────────────────────────────────────────────────────
 
 userSchema.methods.matchPassword = async function (enteredPassword) {
   return await bcrypt.compare(enteredPassword, this.password);
@@ -145,7 +184,7 @@ userSchema.methods.changedPasswordAfter = function (JWTTimestamp) {
 
 userSchema.methods.createPasswordResetToken = function () {
   const resetToken = crypto.randomBytes(32).toString('hex');
-  this.passwordResetToken = crypto.createHash('sha256').update(resetToken).digest('hex');
+  this.passwordResetToken   = crypto.createHash('sha256').update(resetToken).digest('hex');
   this.passwordResetExpires = Date.now() + 60 * 60 * 1000;
   return resetToken;
 };
