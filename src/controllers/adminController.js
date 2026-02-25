@@ -56,37 +56,59 @@ const getPendingUsers = asyncHandler(async (req, res) => {
 /**
  * @desc Get all users (paginated)
  * @route GET /api/admin/users
- * FIX (Issue 1): phone is included by default (not excluded).
+ *
+ * FIX: Removed .populate('assignedProfiles') — it caused a 500 when any
+ *      assignedProfiles ObjectId pointed to a deleted Profile document.
+ *      The users-list page only needs name/email/role/status/bankDetails,
+ *      none of which require population. getUserById still populates for
+ *      the individual user-details page where it IS needed.
  */
 const getAllUsers = asyncHandler(async (req, res) => {
   const { page = 1, limit = 200, role, isApproved, search } = req.query;
   const query = {};
+
   if (role) query.role = role;
   if (isApproved !== undefined) query.isApproved = isApproved === 'true';
   if (search) {
     query.$or = [
-      { name: { $regex: search, $options: 'i' } },
+      { name:  { $regex: search, $options: 'i' } },
       { email: { $regex: search, $options: 'i' } },
       { phone: { $regex: search, $options: 'i' } },
     ];
   }
 
-  const users = await User.find(query)
-    .select('-password')
-    .populate('assignedProfiles', 'fullName email')
-    .sort({ createdAt: -1 })
-    .skip((page - 1) * limit)
-    .limit(Math.min(parseInt(limit), 500)); // raised cap to 500
+  const parsedLimit = Math.min(parseInt(limit) || 200, 500);
+  const parsedPage  = parseInt(page) || 1;
 
-  const total = await User.countDocuments(query);
+  const [users, total] = await Promise.all([
+    User.find(query)
+      .select('-password -assignedProfiles')   // exclude heavy/risky populated field
+      .sort({ createdAt: -1 })
+      .skip((parsedPage - 1) * parsedLimit)
+      .limit(parsedLimit)
+      .lean(),                                  // lean() is faster, no Mongoose overhead
+    User.countDocuments(query),
+  ]);
+
+  // Normalise status field — documents created before status was added may lack it
+  const normalised = users.map((u) => ({
+    ...u,
+    status: u.status || (u.isApproved ? 'approved' : 'pending'),
+  }));
 
   res.json({
     success: true,
-    count: users.length,
+    count: normalised.length,
     total,
-    page: parseInt(page),
-    pages: Math.ceil(total / limit),
-    data: users,
+    page:  parsedPage,
+    pages: Math.ceil(total / parsedLimit),
+    data:  normalised,
+    pagination: {
+      page:  parsedPage,
+      pages: Math.ceil(total / parsedLimit),
+      total,
+      count: normalised.length,
+    },
   });
 });
 
