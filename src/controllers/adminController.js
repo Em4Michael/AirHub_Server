@@ -64,52 +64,63 @@ const getPendingUsers = asyncHandler(async (req, res) => {
  *      the individual user-details page where it IS needed.
  */
 const getAllUsers = asyncHandler(async (req, res) => {
-  const { page = 1, limit = 200, role, isApproved, search } = req.query;
-  const query = {};
+  try {
+    const { page = 1, limit = 200, role, isApproved, search } = req.query;
+    const query = {};
 
-  if (role) query.role = role;
-  if (isApproved !== undefined) query.isApproved = isApproved === 'true';
-  if (search) {
-    query.$or = [
-      { name:  { $regex: search, $options: 'i' } },
-      { email: { $regex: search, $options: 'i' } },
-      { phone: { $regex: search, $options: 'i' } },
-    ];
-  }
+    if (role) query.role = role;
+    if (isApproved !== undefined) query.isApproved = isApproved === 'true';
+    if (search) {
+      query.$or = [
+        { name:  { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+      ];
+    }
 
-  const parsedLimit = Math.min(parseInt(limit) || 200, 500);
-  const parsedPage  = parseInt(page) || 1;
+    const parsedLimit = Math.min(parseInt(limit) || 200, 500);
+    const parsedPage  = parseInt(page) || 1;
 
-  const [users, total] = await Promise.all([
-    User.find(query)
-      .select('-password -assignedProfiles')   // exclude heavy/risky populated field
+    // STEP 1: try the absolute simplest possible query first
+    const users = await User.find(query)
+      .select('name email role status isApproved bankDetails phone extraBonus createdAt profilePhoto')
       .sort({ createdAt: -1 })
       .skip((parsedPage - 1) * parsedLimit)
       .limit(parsedLimit)
-      .lean(),                                  // lean() is faster, no Mongoose overhead
-    User.countDocuments(query),
-  ]);
+      .lean({ virtuals: false });   // explicitly disable virtuals
 
-  // Normalise status field — documents created before status was added may lack it
-  const normalised = users.map((u) => ({
-    ...u,
-    status: u.status || (u.isApproved ? 'approved' : 'pending'),
-  }));
+    const total = await User.countDocuments(query);
 
-  res.json({
-    success: true,
-    count: normalised.length,
-    total,
-    page:  parsedPage,
-    pages: Math.ceil(total / parsedLimit),
-    data:  normalised,
-    pagination: {
-      page:  parsedPage,
-      pages: Math.ceil(total / parsedLimit),
-      total,
+    const normalised = users.map((u) => ({
+      ...u,
+      status: u.status || (u.isApproved ? 'approved' : 'pending'),
+    }));
+
+    return res.json({
+      success: true,
       count: normalised.length,
-    },
-  });
+      total,
+      page: parsedPage,
+      pages: Math.ceil(total / parsedLimit),
+      data: normalised,
+      pagination: {
+        page: parsedPage,
+        pages: Math.ceil(total / parsedLimit),
+        total,
+        count: normalised.length,
+      },
+    });
+
+  } catch (err) {
+    // Log the FULL error so you can see it in Render logs
+    console.error('[getAllUsers] CRASH:', err.name, err.message);
+    console.error('[getAllUsers] STACK:', err.stack);
+
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Failed to load users',
+      errorName: err.name,
+    });
+  }
 });
 
 /**
