@@ -6,11 +6,6 @@ const { asyncHandler, ApiError } = require('../middleware/errorHandler');
 const mongoose = require('mongoose');
 const WeeklyPayment = require('../models/Payment');
 
-// ---------------------------------------------------------------------------
-// Earnings helper — delegates to benchmark.calculateEarnings() which respects
-// earningsMode ('flat' = hours×rate, 'score' = hours×rate×multiplier).
-// Falls back to flat rate if no benchmark is available.
-// ---------------------------------------------------------------------------
 const calculateEarnings = (hours, performanceScore, benchmark) => {
   if (benchmark && typeof benchmark.calculateEarnings === 'function') {
     return benchmark.calculateEarnings(hours, performanceScore).finalEarnings;
@@ -23,19 +18,13 @@ const calculateEarnings = (hours, performanceScore, benchmark) => {
 // User management
 // ---------------------------------------------------------------------------
 
-/**
- * @desc Approve user signup
- * @route PUT /api/admin/approve/:id
- */
 const approveUser = asyncHandler(async (req, res) => {
   const user = await User.findById(req.params.id);
   if (!user) throw new ApiError('User not found', 404);
   if (user.isApproved) throw new ApiError('User is already approved', 400);
-
   user.isApproved = true;
   user.status = 'approved';
   await user.save();
-
   res.json({
     success: true,
     message: 'User approved successfully',
@@ -43,10 +32,6 @@ const approveUser = asyncHandler(async (req, res) => {
   });
 });
 
-/**
- * @desc Get pending signups
- * @route GET /api/admin/pending-users
- */
 const getPendingUsers = asyncHandler(async (req, res) => {
   const users = await User.find({ isApproved: false, role: 'user' })
     .select('-bankDetails -password')
@@ -55,19 +40,8 @@ const getPendingUsers = asyncHandler(async (req, res) => {
   res.json({ success: true, count: users.length, data: users });
 });
 
-/**
- * @desc Get all users (paginated)
- * @route GET /api/admin/users
- *
- * FIX 1: Removed .populate('assignedProfiles') — caused 500 when any
- *         assignedProfiles ObjectId pointed to a deleted Profile document.
- * FIX 2: Added .allowDiskUse(true) — fixes "Sort exceeded memory limit of
- *         33554432 bytes" on MongoDB free tier / Atlas M0 clusters which cap
- *         in-memory sort at 32 MB. allowDiskUse spills to disk instead.
- * FIX 3: Added indexes in User model for createdAt so disk spill is rare.
- */
 const getAllUsers = asyncHandler(async (req, res) => {
-  const { page = 1, limit = 200, role, isApproved, search } = req.query;
+  const { page = 1, limit = 25, role, isApproved, search } = req.query;
   const query = {};
 
   if (role) query.role = role;
@@ -80,21 +54,23 @@ const getAllUsers = asyncHandler(async (req, res) => {
     ];
   }
 
-  const parsedLimit = Math.min(parseInt(limit) || 200, 500);
+  const parsedLimit = Math.min(parseInt(limit) || 25, 500);
   const parsedPage  = parseInt(page) || 1;
 
   const [users, total] = await Promise.all([
     User.find(query)
-      .select('name email role status isApproved bankDetails phone extraBonus extraBonusReason createdAt profilePhoto weekStartDay')
+      // FIX: profilePhoto removed — was storing base64 (up to 5MB per user)
+      // which caused every users-list query to transfer hundreds of MB and
+      // hang indefinitely. Avatars now use name initials instead.
+      .select('name email role status isApproved bankDetails phone extraBonus extraBonusReason createdAt weekStartDay')
       .sort({ createdAt: 1 })
       .skip((parsedPage - 1) * parsedLimit)
       .limit(parsedLimit)
       .lean({ virtuals: false })
-      .allowDiskUse(true),          // ← fixes the 32 MB sort memory crash
+      .allowDiskUse(true),
     User.countDocuments(query),
   ]);
 
-  // Normalise status — old documents created before the status field existed
   const normalised = users.map((u) => ({
     ...u,
     status: u.status || (u.isApproved ? 'approved' : 'pending'),
@@ -107,7 +83,6 @@ const getAllUsers = asyncHandler(async (req, res) => {
     page:  parsedPage,
     pages: Math.ceil(total / parsedLimit),
     data:  normalised,
-    // Both shapes — frontend reads response.pagination?.pages
     pagination: {
       page:  parsedPage,
       pages: Math.ceil(total / parsedLimit),
@@ -117,10 +92,6 @@ const getAllUsers = asyncHandler(async (req, res) => {
   });
 });
 
-/**
- * @desc Get single user by ID
- * @route GET /api/admin/users/:id
- */
 const getUserById = asyncHandler(async (req, res) => {
   const user = await User.findById(req.params.id)
     .select('-password')
@@ -133,19 +104,10 @@ const getUserById = asyncHandler(async (req, res) => {
 // Profile management
 // ---------------------------------------------------------------------------
 
-/**
- * @desc Create new profile (client account)
- * @route POST /api/admin/profile
- */
 const createProfile = asyncHandler(async (req, res) => {
-  const {
-    email, password, fullName, state, country,
-    accountBearerName, defaultWorker, secondWorker,
-  } = req.body;
+  const { email, password, fullName, state, country, accountBearerName, defaultWorker, secondWorker } = req.body;
 
-  if (await Profile.findOne({ email })) {
-    throw new ApiError('Profile with this email already exists', 400);
-  }
+  if (await Profile.findOne({ email })) throw new ApiError('Profile with this email already exists', 400);
 
   for (const [label, workerId] of [['defaultWorker', defaultWorker], ['secondWorker', secondWorker]]) {
     if (workerId) {
@@ -160,7 +122,6 @@ const createProfile = asyncHandler(async (req, res) => {
   }
 
   const profilePassword = password || Math.random().toString(36).slice(-8) + 'A1!';
-
   const profile = await Profile.create({
     email, password: profilePassword, fullName, state, country,
     accountBearerName,
@@ -168,12 +129,8 @@ const createProfile = asyncHandler(async (req, res) => {
     secondWorker:  secondWorker  || null,
   });
 
-  if (defaultWorker) {
-    await User.findByIdAndUpdate(defaultWorker, { $addToSet: { assignedProfiles: profile._id } });
-  }
-  if (secondWorker) {
-    await User.findByIdAndUpdate(secondWorker, { $addToSet: { assignedProfiles: profile._id } });
-  }
+  if (defaultWorker) await User.findByIdAndUpdate(defaultWorker, { $addToSet: { assignedProfiles: profile._id } });
+  if (secondWorker)  await User.findByIdAndUpdate(secondWorker,  { $addToSet: { assignedProfiles: profile._id } });
 
   res.status(201).json({
     success: true,
@@ -182,30 +139,15 @@ const createProfile = asyncHandler(async (req, res) => {
   });
 });
 
-/**
- * @desc Update existing profile
- * @route PUT /api/admin/profile/:id
- */
 const updateProfile = asyncHandler(async (req, res) => {
   const profile = await Profile.findById(req.params.id);
   if (!profile) throw new ApiError('Profile not found', 404);
-
-  const allowed = [
-    'email', 'password', 'fullName', 'state', 'country',
-    'accountBearerName', 'defaultWorker', 'secondWorker', 'isActive',
-  ];
-  allowed.forEach((field) => {
-    if (req.body[field] !== undefined) profile[field] = req.body[field];
-  });
-
+  const allowed = ['email', 'password', 'fullName', 'state', 'country', 'accountBearerName', 'defaultWorker', 'secondWorker', 'isActive'];
+  allowed.forEach((field) => { if (req.body[field] !== undefined) profile[field] = req.body[field]; });
   await profile.save();
   res.json({ success: true, message: 'Profile updated', data: profile });
 });
 
-/**
- * @desc Get all profiles (paginated, filterable)
- * @route GET /api/admin/profiles
- */
 const getProfiles = asyncHandler(async (req, res) => {
   const { page = 1, limit = 20, sort = '-createdAt', search, workerId } = req.query;
   const query = {};
@@ -227,7 +169,7 @@ const getProfiles = asyncHandler(async (req, res) => {
 
   const profiles = await Profile.find(query)
     .populate('defaultWorker', 'name email phone')
-    .populate('secondWorker', 'name email phone')
+    .populate('secondWorker',  'name email phone')
     .populate('temporaryAssignments.worker', 'name email phone')
     .sort(sort)
     .skip((page - 1) * limit)
@@ -235,28 +177,15 @@ const getProfiles = asyncHandler(async (req, res) => {
     .allowDiskUse(true);
 
   const total = await Profile.countDocuments(query);
-
-  res.json({
-    success: true,
-    count: profiles.length,
-    total,
-    page: parseInt(page),
-    pages: Math.ceil(total / limit),
-    data: profiles,
-  });
+  res.json({ success: true, count: profiles.length, total, page: parseInt(page), pages: Math.ceil(total / limit), data: profiles });
 });
 
-/**
- * @desc Get single profile + entries
- * @route GET /api/admin/profile/:id
- */
 const getProfileById = asyncHandler(async (req, res) => {
   const profile = await Profile.findById(req.params.id)
     .select('+password')
     .populate('defaultWorker', 'name email phone')
-    .populate('secondWorker', 'name email phone')
+    .populate('secondWorker',  'name email phone')
     .populate('temporaryAssignments.worker', 'name email phone');
-
   if (!profile) throw new ApiError('Profile not found', 404);
 
   const entries = await Entry.find({ profile: req.params.id })
@@ -271,13 +200,8 @@ const getProfileById = asyncHandler(async (req, res) => {
 // Entry vetting
 // ---------------------------------------------------------------------------
 
-/**
- * @desc Vet / approve an entry and auto-create or update the weekly payment.
- * @route POST /api/admin/vet-entry
- */
 const vetEntry = asyncHandler(async (req, res) => {
   const { entryId, adminTime, adminQuality, adminNotes } = req.body;
-
   const entry = await Entry.findById(entryId);
   if (!entry) throw new ApiError('Entry not found', 404);
 
@@ -288,44 +212,20 @@ const vetEntry = asyncHandler(async (req, res) => {
   entry.adminApproved = true;
   entry.approvedBy    = req.user._id;
   entry.approvedAt    = new Date();
-
   await entry.save();
 
   try {
     const worker = await User.findById(entry.worker).select('weekStartDay');
     const weekStartDay = worker ? (worker.weekStartDay ?? 2) : 2;
-
     const { weekStart, weekEnd } = WeeklyPayment.getWeekBoundaries(new Date(entry.date), weekStartDay);
     const { weekNumber, year }   = WeeklyPayment.getWeekNumberAndYear(weekStart);
-
-    const benchmark =
-      (await Benchmark.getCurrentBenchmark()) || (await Benchmark.getLatestBenchmark());
-
+    const benchmark = (await Benchmark.getCurrentBenchmark()) || (await Benchmark.getLatestBenchmark());
     const stats = await Entry.aggregate([
-      {
-        $match: {
-          worker:        entry.worker,
-          date:          { $gte: weekStart, $lte: weekEnd },
-          adminApproved: true,
-        },
-      },
-      {
-        $group: {
-          _id:        null,
-          totalHours: { $sum: { $ifNull: ['$adminTime',    '$time']    } },
-          avgQuality: { $avg: { $ifNull: ['$adminQuality', '$quality'] } },
-          entryCount: { $sum: 1 },
-          avgTime:    { $avg: { $ifNull: ['$adminTime',    '$time']    } },
-        },
-      },
+      { $match: { worker: entry.worker, date: { $gte: weekStart, $lte: weekEnd }, adminApproved: true } },
+      { $group: { _id: null, totalHours: { $sum: { $ifNull: ['$adminTime', '$time'] } }, avgQuality: { $avg: { $ifNull: ['$adminQuality', '$quality'] } }, entryCount: { $sum: 1 }, avgTime: { $avg: { $ifNull: ['$adminTime', '$time'] } } } },
     ]);
-
     const weekStats = stats[0] || { totalHours: 0, avgQuality: 0, entryCount: 0, avgTime: 0 };
-
-    await WeeklyPayment.createOrUpdateWeeklyPayment(
-      entry.worker.toString(), weekStart, weekEnd, weekNumber, year,
-      weekStats, benchmark, weekStartDay
-    );
+    await WeeklyPayment.createOrUpdateWeeklyPayment(entry.worker.toString(), weekStart, weekEnd, weekNumber, year, weekStats, benchmark, weekStartDay);
   } catch (err) {
     console.error('Failed to auto-generate weekly payment:', err);
   }
@@ -337,10 +237,6 @@ const vetEntry = asyncHandler(async (req, res) => {
 // Entry listing
 // ---------------------------------------------------------------------------
 
-/**
- * @desc Get entries (paginated, filtered)
- * @route GET /api/admin/entries
- */
 const getEntries = asyncHandler(async (req, res) => {
   const { page = 1, limit = 50, approved, workerId, profileId, startDate, endDate } = req.query;
   const query = {};
@@ -364,78 +260,27 @@ const getEntries = asyncHandler(async (req, res) => {
     .allowDiskUse(true);
 
   const total = await Entry.countDocuments(query);
-
-  res.json({
-    success: true,
-    count: entries.length,
-    total,
-    page:  parseInt(page),
-    pages: Math.ceil(total / limit),
-    data:  entries,
-  });
+  res.json({ success: true, count: entries.length, total, page: parseInt(page), pages: Math.ceil(total / limit), data: entries });
 });
 
 // ---------------------------------------------------------------------------
-// Ranked profiles / worker performance
+// Ranked profiles
 // ---------------------------------------------------------------------------
 
-/**
- * @desc Get ranked workers by performance
- * @route GET /api/admin/ranked-profiles
- */
 const getRankedProfiles = asyncHandler(async (req, res) => {
   const { startDate, endDate } = req.query;
   const end   = endDate   ? new Date(endDate)   : new Date();
   const start = startDate ? new Date(startDate) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-
-  const benchmark =
-    (await Benchmark.getCurrentBenchmark()) || (await Benchmark.getLatestBenchmark());
+  const benchmark = (await Benchmark.getCurrentBenchmark()) || (await Benchmark.getLatestBenchmark());
 
   const ranked = await Entry.aggregate([
     { $match: { date: { $gte: start, $lte: end }, adminApproved: true } },
-    {
-      $group: {
-        _id:          '$worker',
-        totalTime:    { $sum: { $ifNull: ['$adminTime',    '$time']    } },
-        totalQuality: { $sum: { $ifNull: ['$adminQuality', '$quality'] } },
-        entryCount:   { $sum: 1 },
-        avgQuality:   { $avg: { $ifNull: ['$adminQuality', '$quality'] } },
-        avgTime:      { $avg: { $ifNull: ['$adminTime',    '$time']    } },
-      },
-    },
-    {
-      $addFields: {
-        overallScore: {
-          $add: [
-            { $multiply: ['$avgQuality', 0.6] },
-            { $multiply: ['$avgTime',    0.4] },
-          ],
-        },
-      },
-    },
+    { $group: { _id: '$worker', totalTime: { $sum: { $ifNull: ['$adminTime', '$time'] } }, totalQuality: { $sum: { $ifNull: ['$adminQuality', '$quality'] } }, entryCount: { $sum: 1 }, avgQuality: { $avg: { $ifNull: ['$adminQuality', '$quality'] } }, avgTime: { $avg: { $ifNull: ['$adminTime', '$time'] } } } },
+    { $addFields: { overallScore: { $add: [{ $multiply: ['$avgQuality', 0.6] }, { $multiply: ['$avgTime', 0.4] }] } } },
     { $sort: { overallScore: -1 } },
-    {
-      $lookup: {
-        from:         'users',
-        localField:   '_id',
-        foreignField: '_id',
-        as:           'worker',
-      },
-    },
+    { $lookup: { from: 'users', localField: '_id', foreignField: '_id', as: 'worker' } },
     { $unwind: '$worker' },
-    {
-      $project: {
-        _id:          '$worker._id',
-        name:         '$worker.name',
-        email:        '$worker.email',
-        phone:        '$worker.phone',
-        totalTime:    { $round: ['$totalTime',    2] },
-        avgQuality:   { $round: ['$avgQuality',   2] },
-        avgTime:      { $round: ['$avgTime',       2] },
-        overallScore: { $round: ['$overallScore',  2] },
-        entryCount:   1,
-      },
-    },
+    { $project: { _id: '$worker._id', name: '$worker.name', email: '$worker.email', phone: '$worker.phone', totalTime: { $round: ['$totalTime', 2] }, avgQuality: { $round: ['$avgQuality', 2] }, avgTime: { $round: ['$avgTime', 2] }, overallScore: { $round: ['$overallScore', 2] }, entryCount: 1 } },
   ]);
 
   const rankedWithEarnings = ranked.map((worker) => ({
@@ -443,31 +288,18 @@ const getRankedProfiles = asyncHandler(async (req, res) => {
     weeklyEarnings: Math.round(calculateEarnings(worker.totalTime, worker.overallScore, benchmark)),
   }));
 
-  res.json({
-    success: true,
-    count: rankedWithEarnings.length,
-    dateRange: { start, end },
-    data: rankedWithEarnings,
-  });
+  res.json({ success: true, count: rankedWithEarnings.length, dateRange: { start, end }, data: rankedWithEarnings });
 });
 
 // ---------------------------------------------------------------------------
 // Worker assignment
 // ---------------------------------------------------------------------------
 
-/**
- * @desc Reassign worker (permanent or temporary)
- * @route PUT /api/admin/reassign
- */
 const reassignWorker = asyncHandler(async (req, res) => {
-  const {
-    profileId, newWorkerId, startDate, endDate, reason,
-    permanent = false, slot = 'default',
-  } = req.body;
+  const { profileId, newWorkerId, startDate, endDate, reason, permanent = false, slot = 'default' } = req.body;
 
   const profile = await Profile.findById(profileId);
   if (!profile) throw new ApiError('Profile not found', 404);
-
   const newWorker = await User.findById(newWorkerId);
   if (!newWorker) throw new ApiError('Worker not found', 404);
   if (newWorker.role !== 'user') throw new ApiError('Only role "user" can be assigned', 400);
@@ -475,46 +307,28 @@ const reassignWorker = asyncHandler(async (req, res) => {
   if (permanent) {
     const workerField = slot === 'second' ? 'secondWorker' : 'defaultWorker';
     const oldWorkerId = profile[workerField];
-
     profile[workerField] = newWorkerId;
     await profile.save();
-
     if (oldWorkerId && oldWorkerId.toString() !== newWorkerId.toString()) {
       await User.findByIdAndUpdate(oldWorkerId, { $pull: { assignedProfiles: profileId } });
     }
     await User.findByIdAndUpdate(newWorkerId, { $addToSet: { assignedProfiles: profileId } });
-
     return res.json({ success: true, message: 'Permanent reassignment complete', data: profile });
   }
 
   const start = new Date(startDate);
   const end   = new Date(endDate);
   if (end <= start) throw new ApiError('End date must be after start date', 400);
-
-  profile.temporaryAssignments.push({
-    worker:    newWorkerId,
-    startDate: start,
-    endDate:   end,
-    reason:    reason || 'Temporary assignment',
-  });
-
+  profile.temporaryAssignments.push({ worker: newWorkerId, startDate: start, endDate: end, reason: reason || 'Temporary assignment' });
   await profile.save();
   res.json({ success: true, message: 'Temporary reassignment added', data: profile });
 });
 
-/**
- * @desc Remove temporary assignment
- * @route DELETE /api/admin/reassign/:profileId/:assignmentId
- */
 const removeTemporaryAssignment = asyncHandler(async (req, res) => {
   const { profileId, assignmentId } = req.params;
   const profile = await Profile.findById(profileId);
   if (!profile) throw new ApiError('Profile not found', 404);
-
-  profile.temporaryAssignments = profile.temporaryAssignments.filter(
-    (a) => a._id.toString() !== assignmentId
-  );
-
+  profile.temporaryAssignments = profile.temporaryAssignments.filter((a) => a._id.toString() !== assignmentId);
   await profile.save();
   res.json({ success: true, message: 'Temporary assignment removed', data: profile });
 });
@@ -523,88 +337,35 @@ const removeTemporaryAssignment = asyncHandler(async (req, res) => {
 // Dashboard stats
 // ---------------------------------------------------------------------------
 
-/**
- * @desc Get aggregated admin dashboard statistics
- * @route GET /api/admin/worker-stats
- */
 const getWorkerStats = asyncHandler(async (req, res) => {
   const { startDate, endDate } = req.query;
   const end   = endDate   ? new Date(endDate)   : new Date();
   const start = startDate ? new Date(startDate) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const benchmark = (await Benchmark.getCurrentBenchmark()) || (await Benchmark.getLatestBenchmark());
 
-  const benchmark =
-    (await Benchmark.getCurrentBenchmark()) || (await Benchmark.getLatestBenchmark());
-
-  const [
-    totalUsers, totalProfiles, pendingEntries, pendingUsers,
-    activeWorkersResult, weeklyStatsResult,
-  ] = await Promise.all([
+  const [totalUsers, totalProfiles, pendingEntries, pendingUsers, activeWorkersResult, weeklyStatsResult] = await Promise.all([
     User.countDocuments({ role: 'user' }),
     Profile.countDocuments(),
     Entry.countDocuments({ adminApproved: false }),
     User.countDocuments({ isApproved: false, role: 'user' }),
-    Entry.aggregate([
-      { $match: { date: { $gte: start, $lte: end }, adminApproved: true } },
-      { $group: { _id: '$worker' } },
-      { $count: 'count' },
-    ]),
-    Entry.aggregate([
-      { $match: { date: { $gte: start, $lte: end }, adminApproved: true } },
-      {
-        $group: {
-          _id:          null,
-          totalHours:   { $sum: { $ifNull: ['$adminTime',    '$time']    } },
-          avgQuality:   { $avg: { $ifNull: ['$adminQuality', '$quality'] } },
-          totalEntries: { $sum: 1 },
-          avgTime:      { $avg: { $ifNull: ['$adminTime',    '$time']    } },
-        },
-      },
-    ]),
+    Entry.aggregate([{ $match: { date: { $gte: start, $lte: end }, adminApproved: true } }, { $group: { _id: '$worker' } }, { $count: 'count' }]),
+    Entry.aggregate([{ $match: { date: { $gte: start, $lte: end }, adminApproved: true } }, { $group: { _id: null, totalHours: { $sum: { $ifNull: ['$adminTime', '$time'] } }, avgQuality: { $avg: { $ifNull: ['$adminQuality', '$quality'] } }, totalEntries: { $sum: 1 }, avgTime: { $avg: { $ifNull: ['$adminTime', '$time'] } } } }]),
   ]);
 
   const activeWorkers = activeWorkersResult[0]?.count || 0;
   const weeklyStats   = weeklyStatsResult[0] || { totalHours: 0, avgQuality: 0, totalEntries: 0, avgTime: 0 };
-
   const overallPerformance = weeklyStats.avgQuality * 0.6 + (weeklyStats.avgTime || 0) * 0.4;
   const weeklyEarnings     = calculateEarnings(weeklyStats.totalHours, overallPerformance, benchmark);
 
-  const lifetimeStatsResult = await Entry.aggregate([
-    { $match: { adminApproved: true } },
-    {
-      $group: {
-        _id:          null,
-        totalHours:   { $sum: { $ifNull: ['$adminTime',    '$time']    } },
-        avgQuality:   { $avg: { $ifNull: ['$adminQuality', '$quality'] } },
-        totalEntries: { $sum: 1 },
-        avgTime:      { $avg: { $ifNull: ['$adminTime',    '$time']    } },
-      },
-    },
-  ]);
-
+  const lifetimeStatsResult = await Entry.aggregate([{ $match: { adminApproved: true } }, { $group: { _id: null, totalHours: { $sum: { $ifNull: ['$adminTime', '$time'] } }, avgQuality: { $avg: { $ifNull: ['$adminQuality', '$quality'] } }, totalEntries: { $sum: 1 }, avgTime: { $avg: { $ifNull: ['$adminTime', '$time'] } } } }]);
   const lifetimeStats       = lifetimeStatsResult[0] || { totalHours: 0, avgQuality: 0, totalEntries: 0, avgTime: 0 };
   const lifetimePerformance = lifetimeStats.avgQuality * 0.6 + (lifetimeStats.avgTime || 0) * 0.4;
   const lifetimeEarnings    = calculateEarnings(lifetimeStats.totalHours, lifetimePerformance, benchmark);
 
   res.json({
     success: true,
-    data: {
-      totalUsers,
-      totalProfiles,
-      pendingEntries,
-      pendingUsers,
-      activeWorkers,
-      totalHoursThisWeek: Math.round(weeklyStats.totalHours * 100) / 100,
-      avgQualityThisWeek: Math.round(weeklyStats.avgQuality * 10)  / 10,
-      weeklyEarnings:     Math.round(weeklyEarnings),
-      lifetimeEarnings:   Math.round(lifetimeEarnings),
-    },
-    benchmark: benchmark
-      ? {
-          timeBenchmark:    benchmark.timeBenchmark,
-          qualityBenchmark: benchmark.qualityBenchmark,
-          thresholds:       benchmark.thresholds,
-        }
-      : null,
+    data: { totalUsers, totalProfiles, pendingEntries, pendingUsers, activeWorkers, totalHoursThisWeek: Math.round(weeklyStats.totalHours * 100) / 100, avgQualityThisWeek: Math.round(weeklyStats.avgQuality * 10) / 10, weeklyEarnings: Math.round(weeklyEarnings), lifetimeEarnings: Math.round(lifetimeEarnings) },
+    benchmark: benchmark ? { timeBenchmark: benchmark.timeBenchmark, qualityBenchmark: benchmark.qualityBenchmark, thresholds: benchmark.thresholds } : null,
     dateRange: { start, end },
   });
 });
@@ -613,238 +374,77 @@ const getWorkerStats = asyncHandler(async (req, res) => {
 // Per-user stats
 // ---------------------------------------------------------------------------
 
-/**
- * @desc Get detailed performance stats for a specific user
- * @route GET /api/admin/users/:id/stats
- */
 const getUserStats = asyncHandler(async (req, res) => {
   const userId = req.params.id;
-
   const user = await User.findById(userId).select('-password');
   if (!user) throw new ApiError('User not found', 404);
 
-  const now          = new Date();
+  const now = new Date();
   const weekStartDay = user.weekStartDay ?? 2;
-
   const { weekStart, weekEnd } = WeeklyPayment.getWeekBoundaries(now, weekStartDay);
-
-  const benchmark =
-    (await Benchmark.getCurrentBenchmark()) || (await Benchmark.getLatestBenchmark());
+  const benchmark = (await Benchmark.getCurrentBenchmark()) || (await Benchmark.getLatestBenchmark());
 
   const [lifetimeStatsRaw, weeklyStatsRaw] = await Promise.all([
-    Entry.aggregate([
-      {
-        $match: {
-          worker:        new mongoose.Types.ObjectId(userId),
-          adminApproved: true,
-        },
-      },
-      {
-        $group: {
-          _id:        null,
-          totalHours: { $sum: { $ifNull: ['$adminTime',    '$time']    } },
-          avgQuality: { $avg: { $ifNull: ['$adminQuality', '$quality'] } },
-          entryCount: { $sum: 1 },
-          avgTime:    { $avg: { $ifNull: ['$adminTime',    '$time']    } },
-        },
-      },
-    ]),
-    Entry.aggregate([
-      {
-        $match: {
-          worker:        new mongoose.Types.ObjectId(userId),
-          date:          { $gte: weekStart, $lte: weekEnd },
-          adminApproved: true,
-        },
-      },
-      {
-        $group: {
-          _id:        null,
-          totalHours: { $sum: { $ifNull: ['$adminTime',    '$time']    } },
-          avgQuality: { $avg: { $ifNull: ['$adminQuality', '$quality'] } },
-          entryCount: { $sum: 1 },
-          avgTime:    { $avg: { $ifNull: ['$adminTime',    '$time']    } },
-        },
-      },
-    ]),
+    Entry.aggregate([{ $match: { worker: new mongoose.Types.ObjectId(userId), adminApproved: true } }, { $group: { _id: null, totalHours: { $sum: { $ifNull: ['$adminTime', '$time'] } }, avgQuality: { $avg: { $ifNull: ['$adminQuality', '$quality'] } }, entryCount: { $sum: 1 }, avgTime: { $avg: { $ifNull: ['$adminTime', '$time'] } } } }]),
+    Entry.aggregate([{ $match: { worker: new mongoose.Types.ObjectId(userId), date: { $gte: weekStart, $lte: weekEnd }, adminApproved: true } }, { $group: { _id: null, totalHours: { $sum: { $ifNull: ['$adminTime', '$time'] } }, avgQuality: { $avg: { $ifNull: ['$adminQuality', '$quality'] } }, entryCount: { $sum: 1 }, avgTime: { $avg: { $ifNull: ['$adminTime', '$time'] } } } }]),
   ]);
 
   const lifetime = lifetimeStatsRaw[0] || { totalHours: 0, avgQuality: 0, entryCount: 0, avgTime: 0 };
   const weekly   = weeklyStatsRaw[0]   || { totalHours: 0, avgQuality: 0, entryCount: 0, avgTime: 0 };
 
-  const lifetimePerformance = lifetime.avgQuality * 0.6 + lifetime.avgTime * 0.4;
-  const weeklyPerformance   = weekly.avgQuality   * 0.6 + weekly.avgTime   * 0.4;
+  const lifetimeEarnings = calculateEarnings(lifetime.totalHours, lifetime.avgQuality * 0.6 + lifetime.avgTime * 0.4, benchmark);
+  const weeklyEarnings   = calculateEarnings(weekly.totalHours,   weekly.avgQuality   * 0.6 + weekly.avgTime   * 0.4, benchmark);
 
-  const lifetimeEarnings = calculateEarnings(lifetime.totalHours, lifetimePerformance, benchmark);
-  const weeklyEarnings   = calculateEarnings(weekly.totalHours,   weeklyPerformance,   benchmark);
-
-  const payments = await WeeklyPayment.find({ user: userId })
-    .sort({ weekStart: -1 })
-    .limit(20)
-    .lean()
-    .allowDiskUse(true);
+  const payments = await WeeklyPayment.find({ user: userId }).sort({ weekStart: -1 }).limit(20).lean().allowDiskUse(true);
 
   res.json({
     success: true,
     data: {
-      user: {
-        id:               user._id,
-        name:             user.name,
-        email:            user.email,
-        phone:            user.phone,
-        role:             user.role,
-        status:           user.status || (user.isApproved ? 'approved' : 'pending'),
-        isApproved:       user.isApproved,
-        weekStartDay,
-        bankDetails:      user.bankDetails,
-        extraBonus:       user.extraBonus,
-        extraBonusReason: user.extraBonusReason,
-        profilePhoto:     user.profilePhoto,
-      },
+      user: { id: user._id, name: user.name, email: user.email, phone: user.phone, role: user.role, status: user.status || (user.isApproved ? 'approved' : 'pending'), isApproved: user.isApproved, weekStartDay, bankDetails: user.bankDetails, extraBonus: user.extraBonus, extraBonusReason: user.extraBonusReason },
       currentWeekRange: { weekStart, weekEnd },
-      lifetime: {
-        totalHours:    Math.round(lifetime.totalHours * 100) / 100,
-        avgQuality:    Math.round(lifetime.avgQuality * 100) / 100,
-        entryCount:    lifetime.entryCount,
-        totalEarnings: Math.round(lifetimeEarnings),
-      },
-      weekly: {
-        totalHours:    Math.round(weekly.totalHours * 100) / 100,
-        avgQuality:    Math.round(weekly.avgQuality * 100) / 100,
-        entryCount:    weekly.entryCount,
-        totalEarnings: Math.round(weeklyEarnings),
-      },
-      payments: payments.map((p) => ({
-        id:               p._id,
-        weekStart:        p.weekStart,
-        weekEnd:          p.weekEnd,
-        weekNumber:       p.weekNumber,
-        year:             p.year,
-        hours:            p.totalHours,
-        quality:          p.avgQuality,
-        earnings:         p.totalEarnings,
-        paid:             p.paid,
-        paidDate:         p.paidDate,
-        status:           p.status,
-        paymentType:      p.paymentType,
-        extraBonus:       p.extraBonus,
-        extraBonusReason: p.extraBonusReason,
-        notes:            p.adminNotes,
-      })),
+      lifetime: { totalHours: Math.round(lifetime.totalHours * 100) / 100, avgQuality: Math.round(lifetime.avgQuality * 100) / 100, entryCount: lifetime.entryCount, totalEarnings: Math.round(lifetimeEarnings) },
+      weekly:   { totalHours: Math.round(weekly.totalHours   * 100) / 100, avgQuality: Math.round(weekly.avgQuality   * 100) / 100, entryCount: weekly.entryCount,   totalEarnings: Math.round(weeklyEarnings)   },
+      payments: payments.map((p) => ({ id: p._id, weekStart: p.weekStart, weekEnd: p.weekEnd, weekNumber: p.weekNumber, year: p.year, hours: p.totalHours, quality: p.avgQuality, earnings: p.totalEarnings, paid: p.paid, paidDate: p.paidDate, status: p.status, paymentType: p.paymentType, extraBonus: p.extraBonus, extraBonusReason: p.extraBonusReason, notes: p.adminNotes })),
     },
   });
 });
 
-/**
- * @desc Get individual worker earnings breakdown
- * @route GET /api/admin/users/:id/earnings
- */
 const getUserEarnings = asyncHandler(async (req, res) => {
   const userId = req.params.id;
   const user   = await User.findById(userId).select('-password');
   if (!user) throw new ApiError('User not found', 404);
 
-  const now          = new Date();
+  const now = new Date();
   const weekStartDay = user.weekStartDay ?? 2;
   const { weekStart, weekEnd } = WeeklyPayment.getWeekBoundaries(now, weekStartDay);
-
-  const benchmark =
-    (await Benchmark.getCurrentBenchmark()) || (await Benchmark.getLatestBenchmark());
+  const benchmark = (await Benchmark.getCurrentBenchmark()) || (await Benchmark.getLatestBenchmark());
 
   const [weeklyData, lifetimeData] = await Promise.all([
-    Entry.aggregate([
-      {
-        $match: {
-          worker:        new mongoose.Types.ObjectId(userId),
-          date:          { $gte: weekStart, $lte: weekEnd },
-          adminApproved: true,
-        },
-      },
-      {
-        $group: {
-          _id:        null,
-          totalHours: { $sum: { $ifNull: ['$adminTime',    '$time']    } },
-          avgQuality: { $avg: { $ifNull: ['$adminQuality', '$quality'] } },
-          entryCount: { $sum: 1 },
-          avgTime:    { $avg: { $ifNull: ['$adminTime',    '$time']    } },
-        },
-      },
-    ]),
-    Entry.aggregate([
-      {
-        $match: {
-          worker:        new mongoose.Types.ObjectId(userId),
-          adminApproved: true,
-        },
-      },
-      {
-        $group: {
-          _id:        null,
-          totalHours: { $sum: { $ifNull: ['$adminTime',    '$time']    } },
-          avgQuality: { $avg: { $ifNull: ['$adminQuality', '$quality'] } },
-          entryCount: { $sum: 1 },
-          avgTime:    { $avg: { $ifNull: ['$adminTime',    '$time']    } },
-        },
-      },
-    ]),
+    Entry.aggregate([{ $match: { worker: new mongoose.Types.ObjectId(userId), date: { $gte: weekStart, $lte: weekEnd }, adminApproved: true } }, { $group: { _id: null, totalHours: { $sum: { $ifNull: ['$adminTime', '$time'] } }, avgQuality: { $avg: { $ifNull: ['$adminQuality', '$quality'] } }, entryCount: { $sum: 1 }, avgTime: { $avg: { $ifNull: ['$adminTime', '$time'] } } } }]),
+    Entry.aggregate([{ $match: { worker: new mongoose.Types.ObjectId(userId), adminApproved: true } }, { $group: { _id: null, totalHours: { $sum: { $ifNull: ['$adminTime', '$time'] } }, avgQuality: { $avg: { $ifNull: ['$adminQuality', '$quality'] } }, entryCount: { $sum: 1 }, avgTime: { $avg: { $ifNull: ['$adminTime', '$time'] } } } }]),
   ]);
 
   const weekly   = weeklyData[0]   || { totalHours: 0, avgQuality: 0, entryCount: 0, avgTime: 0 };
   const lifetime = lifetimeData[0] || { totalHours: 0, avgQuality: 0, entryCount: 0, avgTime: 0 };
 
-  const weeklyPerformance   = weekly.avgQuality   * 0.6 + weekly.avgTime   * 0.4;
-  const lifetimePerformance = lifetime.avgQuality * 0.6 + lifetime.avgTime * 0.4;
-
-  const weeklyBreakdown = benchmark
-    ? benchmark.calculateEarnings(weekly.totalHours, weeklyPerformance)
-    : { finalEarnings: weekly.totalHours * (parseInt(process.env.HOURLY_RATE) || 2000), multiplier: 1, tier: 'flat' };
-
-  const lifetimeBreakdown = benchmark
-    ? benchmark.calculateEarnings(lifetime.totalHours, lifetimePerformance)
-    : { finalEarnings: lifetime.totalHours * (parseInt(process.env.HOURLY_RATE) || 2000), multiplier: 1, tier: 'flat' };
+  const weeklyBreakdown   = benchmark ? benchmark.calculateEarnings(weekly.totalHours,   weekly.avgQuality   * 0.6 + weekly.avgTime   * 0.4) : { finalEarnings: weekly.totalHours   * (parseInt(process.env.HOURLY_RATE) || 2000), multiplier: 1, tier: 'flat' };
+  const lifetimeBreakdown = benchmark ? benchmark.calculateEarnings(lifetime.totalHours, lifetime.avgQuality * 0.6 + lifetime.avgTime * 0.4) : { finalEarnings: lifetime.totalHours * (parseInt(process.env.HOURLY_RATE) || 2000), multiplier: 1, tier: 'flat' };
 
   res.json({
     success: true,
     data: {
       worker: { id: user._id, name: user.name, email: user.email, phone: user.phone },
       weekRange: { weekStart, weekEnd },
-      weekly: {
-        hours:       Math.round(weekly.totalHours * 100) / 100,
-        quality:     Math.round(weekly.avgQuality * 100) / 100,
-        entries:     weekly.entryCount,
-        earnings:    Math.round(weeklyBreakdown.finalEarnings),
-        multiplier:  weeklyBreakdown.multiplier,
-        tier:        weeklyBreakdown.tier,
-        performance: Math.round(weeklyPerformance * 100) / 100,
-      },
-      lifetime: {
-        hours:       Math.round(lifetime.totalHours * 100) / 100,
-        quality:     Math.round(lifetime.avgQuality * 100) / 100,
-        entries:     lifetime.entryCount,
-        earnings:    Math.round(lifetimeBreakdown.finalEarnings),
-        multiplier:  lifetimeBreakdown.multiplier,
-        tier:        lifetimeBreakdown.tier,
-        performance: Math.round(lifetimePerformance * 100) / 100,
-      },
+      weekly:   { hours: Math.round(weekly.totalHours   * 100) / 100, quality: Math.round(weekly.avgQuality   * 100) / 100, entries: weekly.entryCount,   earnings: Math.round(weeklyBreakdown.finalEarnings),   multiplier: weeklyBreakdown.multiplier,   tier: weeklyBreakdown.tier,   performance: Math.round((weekly.avgQuality   * 0.6 + weekly.avgTime   * 0.4) * 100) / 100 },
+      lifetime: { hours: Math.round(lifetime.totalHours * 100) / 100, quality: Math.round(lifetime.avgQuality * 100) / 100, entries: lifetime.entryCount, earnings: Math.round(lifetimeBreakdown.finalEarnings), multiplier: lifetimeBreakdown.multiplier, tier: lifetimeBreakdown.tier, performance: Math.round((lifetime.avgQuality * 0.6 + lifetime.avgTime * 0.4) * 100) / 100 },
     },
   });
 });
 
 module.exports = {
-  approveUser,
-  getPendingUsers,
-  getAllUsers,
-  getUserById,
-  createProfile,
-  updateProfile,
-  getProfiles,
-  getProfileById,
-  getRankedProfiles,
-  vetEntry,
-  getEntries,
-  reassignWorker,
-  removeTemporaryAssignment,
-  getWorkerStats,
-  getUserStats,
-  getUserEarnings,
-};
+  approveUser, getPendingUsers, getAllUsers, getUserById,
+  createProfile, updateProfile, getProfiles, getProfileById,
+  getRankedProfiles, vetEntry, getEntries,
+  reassignWorker, removeTemporaryAssignment,
+  getWorkerStats, getUserStats, getUserEarnings,
+}; 
