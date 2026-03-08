@@ -86,7 +86,7 @@ const getAllUsers = asyncHandler(async (req, res) => {
   const [users, total] = await Promise.all([
     User.find(query)
       .select('name email role status isApproved bankDetails phone extraBonus extraBonusReason createdAt profilePhoto weekStartDay')
-      .sort({ createdAt: -1 })
+      .sort({ createdAt: 1 })
       .skip((parsedPage - 1) * parsedLimit)
       .limit(parsedLimit)
       .lean({ virtuals: false })
