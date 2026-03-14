@@ -430,7 +430,108 @@ const getProfile = asyncHandler(async (req, res) => {
   res.json({ success: true, data: user });
 });
 
+// ── CONTROLLER (add to userController.js) ────────────────────────────────────
+ 
+const getTopEarners = asyncHandler(async (req, res) => {
+  const { weekStart: weekStartStr } = req.query;
+ 
+  const currentUserId = req.user._id.toString();
+  const weekStartDay  = req.user.weekStartDay ?? 2;
+ 
+  // Resolve week boundaries
+  const referenceDate = weekStartStr ? new Date(weekStartStr) : new Date();
+  const { weekStart, weekEnd } = WeeklyPayment.getWeekBoundaries(referenceDate, weekStartDay);
+ 
+  // Fetch all regular WeeklyPayment records for this week across all users
+  const weekPayments = await WeeklyPayment.find({
+    weekStart,
+    paymentType: 'regular',
+  })
+    .populate('user', 'name email role')
+    .lean();
+ 
+  // ── Aggregate per-user using flat rate (hours × stored hourlyRate + extraBonus)
+  const userMap = new Map();
+  weekPayments.forEach((p) => {
+    const userObj = typeof p.user === 'object' ? p.user : null;
+    const uid     = userObj?._id?.toString() ?? p.user?.toString();
+    if (!uid) return;
+ 
+    // Only include worker-role users in the leaderboard
+    if (userObj?.role && userObj.role !== 'user') return;
+ 
+    const hourlyRate  = p.hourlyRate ?? 2000;
+    const hours       = p.totalHours ?? 0;
+    const extraBonus  = p.extraBonus ?? 0;
+    const flatEarning = hours * hourlyRate + extraBonus;
+ 
+    if (!userMap.has(uid)) {
+      userMap.set(uid, {
+        userId:     uid,
+        name:       userObj?.name ?? 'Unknown',
+        hours:      0,
+        earnings:   0,
+        entryCount: 0,
+      });
+    }
+    const row = userMap.get(uid);
+    row.hours      += hours;
+    row.earnings   += flatEarning;
+    row.entryCount += p.entryCount ?? 0;
+  });
+ 
+  // ── Sort by earnings descending, assign rank
+  const sorted = Array.from(userMap.values())
+    .sort((a, b) => b.earnings - a.earnings)
+    .map((row, idx) => ({
+      rank:          idx + 1,
+      userId:        row.userId,
+      name:          row.name,
+      hours:         Math.round(row.hours * 100) / 100,
+      earnings:      Math.round(row.earnings),
+      entryCount:    row.entryCount,
+      isCurrentUser: row.userId === currentUserId,
+    }));
+ 
+  // ── Current user's entry (null if they had no approved entries / are admin)
+  const currentUserEntry = sorted.find((r) => r.isCurrentUser) ?? null;
+ 
+  // ── Available weeks — distinct weekStarts from all regular payments, most recent first
+  const distinctWeeks = await WeeklyPayment.aggregate([
+    { $match: { paymentType: 'regular' } },
+    {
+      $group: {
+        _id:        '$weekStart',
+        weekEnd:    { $first: '$weekEnd'    },
+        weekNumber: { $first: '$weekNumber' },
+        year:       { $first: '$year'       },
+      },
+    },
+    { $sort: { _id: -1 } },
+    { $limit: 26 }, // ~6 months of history
+  ]);
+ 
+  res.json({
+    success: true,
+    data: {
+      weekStart:        weekStart.toISOString(),
+      weekEnd:          weekEnd.toISOString(),
+      earners:          sorted,
+      currentUserEntry,
+      totalWorkers:     sorted.length,
+      availableWeeks:   distinctWeeks.map((w) => ({
+        weekStart:  w._id,
+        weekEnd:    w.weekEnd,
+        weekNumber: w.weekNumber,
+        year:       w.year,
+      })),
+    },
+  });
+});
+
+
 module.exports = {
+  getTopEarners,
   updateProfile,
   updateBankDetails,
   updateProfilePhoto,

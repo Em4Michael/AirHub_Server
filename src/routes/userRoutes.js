@@ -14,6 +14,7 @@ const {
   getDashboard,
   getWeeklySummary,
   getMyPayments,
+  getTopEarners,
 } = require('../controllers/userController');
 
 const { protect } = require('../middleware/auth');
@@ -54,5 +55,8 @@ router.get('/entries', paginationQuery, dateRangeQuery, getEntries);
 router.get('/dashboard', dateRangeQuery, getDashboard);
 router.get('/weekly-summary', getWeeklySummary);
 router.get('/payments', getMyPayments);
+
+router.get('/top-earners', protect, getTopEarners);
+
 
 module.exports = router;
