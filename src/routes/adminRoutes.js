@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const { getTopEarners } = require('../controllers/userController');
 
 const {
   approveUser,
@@ -118,5 +119,7 @@ router.put('/weekly-payments/:paymentId',               updateWeeklyPayment);
 // ── Statistics ────────────────────────────────────────────────────────────────
 
 router.get('/worker-stats', dateRangeQuery, getWorkerStats);
+
+router.get('/top-earners', getTopEarners);
 
 module.exports = router;
